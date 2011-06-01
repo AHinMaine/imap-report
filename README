@@ -1,0 +1,158 @@
+NAME
+    imap-report.pl - Generate reports on an imap account.
+
+SCRIPT CATEGORIES
+    Mail
+
+README
+    Primarily intended for use with a gmail account, this script can
+    generate various reports on an imap mailbox. I wrote this mostly out of
+    frustration from google's lack of features to allow you to prune your
+    mailbox.
+
+    There is a crude caching mechanism present to speed things up after the
+    message envelope information is loaded. Even though only header
+    information is fetched and cached, this is still a very heavy, time
+    consuming, memory hungry operation on a huge mailbox. The only operation
+    that doesn't populate the cache automatically is the counting of all
+    folders. All other report types end up needing to actually iterate
+    messages and therefor populates the cache. Otherwise the count operation
+    just uses the simple messages_count method of Mail::IMAPClient which
+    uses the STATUS function of IMAP on an individual folder.
+
+    All message fetch operations are broken up into small (--maxfetch)
+    chunks so that if there is a problem during the fetch, such as getting
+    disconnected or other imap error, it won't abort the whole operation,
+    just the current chunk of messages being fetched.
+
+OSNAMES
+    any
+
+PREREQUISITES
+     Mail::IMAPClient >= 3.24
+     Term::ReadKey
+     Term::Menus
+     Date::Manip
+
+COREQUISITES
+     IO::Socket::SSL - Needed by Mail::IMAPClient
+
+SYNOPSIS
+  OPTIONS AND ARGUMENTS
+    --user *username*
+                   Optional username for IMAP authentication. If omitted,
+                   you will be prompted after running the script.
+
+    --password *password*
+                   Optional password for IMAP authentication. If omitted,
+                   you will be prompted after running the script.
+
+    --server *server hostname or ip*
+                   The identity of the IMAP server.
+
+                   (default: imap.gmail.com)
+
+    --port *IMAP Port*
+                   The port used to connect to the IMAP server.
+
+                   (default: 993)
+
+    --top *integer number*
+                   The number of messages in top ten style reports.
+
+                   (default: 10)
+
+    --min *number of bytes*
+                   Messages smaller than this size will be ignored when
+                   gathering statistics on individual messages.
+
+                   (default: 100000)
+
+    --maxfetch *integer number*
+                   The size of an individual fetch operation. Breaks a fetch
+                   operation up into smaller chunks so that an individual
+                   folder with a massive number of messages will not kill
+                   the operation of there is a timeout or other
+                   communication problem.
+
+    --filters *string*
+                   Folder filters. Restrict all operations to folders
+                   matching the specified string. This option can be
+                   specified multiple times.
+
+    --exclude *string*
+                   Folder exclusions. The list of folders will be pruned of
+                   the ones matching the specified string. This option can
+                   be specified multiple times. Perl compatible regex should
+                   work as long as you take care not to allow your shell to
+                   swallow up the expression.
+
+    --cache *cache_filename*
+                   Name of the file used to store cached information.
+
+                   (default: $HOME/.imap-report.cache)
+
+    --cache_age *integer*
+                   Maximum age of cached information.
+
+                   (currently non-functional)
+
+                   (default: 1 day)
+
+    --conf *config_filename*
+                   Name of the file in which to read configuration options.
+
+                   All of these configuration options can be stored in this
+                   file using the same names listed here. Must only be
+                   readable by the user.
+
+                   (default: $HOME/.imapreportrc)
+
+    --list         Just show the list of folders.
+
+    --Keepalive    Corresponds to the Mail::IMAPClient Keepalive option.
+
+                   (default: true)
+
+    --Fast_io      Corresponds to the Mail::IMAPClient Fast_io option to
+                   allow buffered I/O.
+
+                   (default: true)
+
+    --Ssl          Corresponds to the Mail::IMAPClient Ssl option.
+
+                   (default: true)
+
+    --debug        Lots of ugly debugging output to a logfile...
+
+    --verbose      A bit more output than usual
+
+  EXAMPLE
+    "./imap-report.pl"
+
+    (No options are necessary to run this script. See the description of
+    options below for how to override the default settings. Run perldoc
+    imap-report.pl to for further instruction.)
+
+ACKNOWLEDGEMENTS
+    Built largely using Mail::IMAPClient currently maintained by <PLOBBES
+    <http://search.cpan.org/~plobbes/>> and the Term::Menus module by
+    <REEDFISH <http://search.cpan.org/~reedfish/>>, along with
+    String::ProgressBar from <AHERNIT <http://search.cpan.org/~ahernit/>>.
+
+TODO
+    Better caching method.
+    Implement a cache aging mechanism.
+    Better report action handling.
+    Function to produce a report on any header field.
+    Better pager handling.
+    Clean up all that recon() rubbish.
+    Code refactoring...
+
+
+LICENSE AND COPYRIGHT
+    Copyright (c) 2011 Andy Harrison
+
+    You can redistribute and modify this work under the conditions of the
+    GPL.
+
