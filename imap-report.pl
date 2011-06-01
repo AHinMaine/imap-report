@@ -231,27 +231,6 @@ use Term::ReadKey qw/GetTerminalSize/;
 use Term::Menus;
 use Date::Manip::Date;
 
-#use threads ( 'exit' => 'threads_only' );
-#use threads::shared;
-
-my $use_threaded_mode = 0;
-
-# Trying to make threads optional.
-#
-if ( eval 'require threads;' ) {
-    #require threads;
-    import threads ( 'exit' => 'threads_only' );
-    require threads::shared;
-    import threads::shared qw(shared);
-    require Thread::Queue;
-    import Thread::Queue ();
-    $use_threaded_mode = 1;
-
-} else {
-    print "no threads...\n";
-}
-
-
 our $VERSION = sprintf "%d.%d", q$Revision: 1.1 $ =~ /(\d+)/g;
 
 # Handle signals gracefully
@@ -276,9 +255,10 @@ $opts->{pager}             = '/usr/bin/less';
 $opts->{log}               = '/tmp/imap-report.debuglog';
 $opts->{top}               = 10;      # default for top 10 style reports
 $opts->{min}               = 100_000; # default minimum size in bytes
-$opts->{maxfetch}          = 1_000;   # Number of messages in a single fetch operation
+$opts->{Maxcommandlength}  = 1_000;   # Number of messages in a single fetch operation
 $opts->{Keepalive}         = 1;
 $opts->{Fast_io}           = 1;
+$opts->{Reconnectretry}    = 3;
 $opts->{Ssl}               = 1;
 $opts->{cache}             = 1;
 $opts->{cache_file}        = "$ENV{HOME}/.imap-report.cache";
@@ -287,8 +267,8 @@ $opts->{conf}              = "$ENV{HOME}/.imapreportrc";
 $opts->{force}             = 0;
 $opts->{list}              = 0;
 $opts->{types}             = 0;
-$opts->{threads}           = 1;
-$opts->{use_threaded_mode} = $use_threaded_mode;
+$opts->{threads}           = 0;
+$opts->{use_threaded_mode} = 0;
 
 GetOptions(
 
@@ -300,7 +280,6 @@ GetOptions(
         'password=s',
         'top=i',
         'min=i',
-        'maxfetch=i',
         'filters|folder|search=s@{,}',
         'exclude=s@{,}',
         'report=s',
@@ -310,16 +289,18 @@ GetOptions(
         'conf=s',
         'Keepalive!',
         'Fast_io!',
+        'Maxcommandlength=i',
+        'Reconnectretry=i',
         'Ssl!',
         'cache!',
         'cache_file=s',
         'cache_age=i',
+        'threads=i',
+        'use_threaded_mode!',
         'pager=s',
         'force!',
-        'threads=i',
         'debug!',
         'verbose!',
-        'use_threaded_mode!',
 
 );
 
@@ -339,19 +320,29 @@ if ( $opts->{Ssl} ) {
     } || die_clean( 1, "IO::Socket::SSL module not found\n" );
 }
 
-my @valid_threads = ( 1, 2, 3, 5, 7, 11, 13, 17 );
-
-die "Invalid number of threads specified, use: " . join( ' ', @valid_threads ) . "\n"
-    unless ( grep $opts->{threads} == $_, @valid_threads );
-
-if ( ! $opts->{use_threaded_mode} || $opts->{threads} == 1 ) {
-    $use_threaded_mode = 0;
-}
-
 read_config_file();
 
 die "--server option required.\n" unless $opts->{server};
 die "--port option required.\n"   unless $opts->{port};
+
+# Default to unthreaded. Only turn on threading if our
+# conditions are met...
+#
+my $use_threaded_mode = 0;
+
+my @valid_threads = ( 2, 3, 5, 7, 11, 13, 17 );
+
+if ( $opts->{threads} >= 2 && grep $opts->{threads} == $_, @valid_threads ) {
+    if ( eval 'require threads;' ) {
+        import threads ( 'exit' => 'threads_only' );
+        require threads::shared;
+        import threads::shared qw(shared);
+        require Thread::Queue;
+        import Thread::Queue ();
+        $use_threaded_mode = 1;
+    }
+}
+
 
 if ( ! defined $opts->{user} && ! $opts->{user} ) {
     $opts->{user} = user_prompt();
@@ -375,13 +366,22 @@ if ( defined @ARGV && scalar @ARGV ) {
 
 verbose( qq[
 
-          Server: $opts->{server}
-            Port: $opts->{port}
-        Username: $opts->{user}
+           Server: $opts->{server}
+             Port: $opts->{port}
+         Username: $opts->{user}
 
-             min: $opts->{min}
-             top: $opts->{top}
-        maxfetch: $opts->{maxfetch}
+              min: $opts->{min}
+              top: $opts->{top}
+ Maxcommandlength: $opts->{Maxcommandlength}
+          threads: $opts->{threads}
+use_threaded_mode: $opts->{use_threaded_mode}
+
+            cache: $opts->{cache}
+       cache_file: $opts->{cache_file}
+        cache_age: $opts->{cache_age}
+
+          verbose: $opts->{verbose}
+
 
 ]);
 
@@ -415,8 +415,6 @@ my %header_table = (
 );
 
 
-my $reports = report_types();
-
 print "Using IMAP Server: "
     . $opts->{server}
     . ':'
@@ -427,17 +425,19 @@ print "Using IMAP Server: "
 
 my $imap = Mail::IMAPClient->new(
 
-                                    Server    => $opts->{server},
-                                    Port      => $opts->{port},
-                                    User      => $opts->{user},
-                                    Password  => $opts->{password},
-                                    Keepalive => $opts->{Keepalive},
-                                    Fast_io   => $opts->{Fast_io},
-                                    Ssl       => $opts->{Ssl},
-                                    Uid       => 0,
-                                    Clear     => 100,
-                                    Debug     => $opts->{debug},
-                                    Debug_fh  => *DBG,
+                        Server           => $opts->{server},
+                        Port             => $opts->{port},
+                        User             => $opts->{user},
+                        Password         => $opts->{password},
+                        Keepalive        => $opts->{Keepalive},
+                        Fast_io          => $opts->{Fast_io},
+                        Ssl              => $opts->{Ssl},
+                        Reconnectretry   => $opts->{Reconnectretry},
+                        Maxcommandlength => $opts->{Maxcommandlength},
+                        Uid              => 0,
+                        Clear            => 100,
+                        Debug            => $opts->{debug},
+                        Debug_fh         => *DBG,
 
 ) or die "Cannot connect to host : $@";
 
@@ -453,6 +453,8 @@ if ( $use_threaded_mode ) {
     $fetcher_status = Thread::Queue->new();
     $sequence_queue = Thread::Queue->new();
 }
+
+my $reports = report_types();
 
 my $cache = init_cache( $opts->{cache_file} );
 
@@ -612,7 +614,7 @@ sub biggest_messages_report {
     my $stime = time;
 
     my $fetched_messages =
-        $use_threaded_mode && $num >= $opts->{maxfetch}
+        $use_threaded_mode
         ? threaded_fetch_msgs( $folder )
         : fetch_msgs( $folder )
         ;
@@ -963,7 +965,7 @@ sub messages_by_header_report {
     my $num = $imap->message_count;
 
     my $msgs =
-        $use_threaded_mode && $num >= $opts->{maxfetch}
+        $use_threaded_mode
         ? threaded_fetch_msgs( $folder )
         : fetch_msgs( $folder )
         ;
@@ -991,7 +993,7 @@ sub messages_by_header_report {
 
     my $counter = 1;
 
-    # sort the from address by the count of their
+    # sort the header field by the count of their
     # occurrences.
     #
     for ( reverse sort { $header_stats->{$a} <=> $header_stats->{$b} } keys %$header_stats ) {
@@ -1684,6 +1686,133 @@ sub fetch_folders {
 sub fetch_msgs {
 
     my $folder = shift;
+
+    # Damn ye scalar leaks...
+    #
+    @_ = ();
+
+    my @headers;
+
+    push @headers, $header_table{$_} for qw/Date Subject Size To From/;
+
+    #ddump( 'headers',        \@headers )        if $opts->{debug};
+
+    # This will hold the entire result of fetching
+    # operations.
+    #
+    my $fetcher = {};
+
+    $fetcher = check_cache( 'fetched_messages', $folder );
+
+    return $fetcher if $fetcher;
+
+    recon();
+
+    # Quick sanity check to see if the chosen folder really
+    # exists, not all that necessary because the folder list
+    # is well validated at the beginning of the script, but,
+    # just to be safe in case anything was modified during
+    # the runtime of this script...
+    #
+    if ( ! $imap->exists($folder) ) {
+        show_error( "Error: $folder not a valid folder: $@\nLastError: " . $imap->LastError );
+        return ( 0, 0 );
+    }
+
+    $imap->examine($folder)
+        or show_error( "Error selecting $folder: $@\n" );
+
+
+    # One more quick sanity check to make sure we really are
+    # in a folder and that folder is in a select (examine)
+    # state.
+    #
+    if ( $imap->Folder() ) {
+
+        my $msg_count = $imap->message_count;
+
+        # Return empty handed if there are no messages in
+        # the folder.
+        #
+        return unless $msg_count;
+
+        # Take the list of message id's and break them up
+        # into smaller chunks in the form of an array of
+        # MessageSet objects.
+        #
+        my @sequences = $imap->messages;
+
+        # Trying to come up with a way of trapping a Ctrl-C
+        # to gracefully finish the current iteration and
+        # finish producing the report.  It doesn't work very
+        # well.
+        #
+        $SIG{'INT'} = 'break_fetch';
+
+        print "Fetching $msg_count messages...\n";
+
+        $fetcher = $imap->fetch_hash( \@sequences, @headers );
+
+
+        # Set the break function back to what it was.
+        #
+        $SIG{'INT'} = 'die_signal';
+
+    } else {
+        die_clean( 1, "Error checking current folder selection: $! " . $imap->LastError );
+    }
+
+    #ddump( 'fetcher', $fetcher ) if $opts->{debug};
+
+    my $max = ( scalar(keys %$fetcher) );
+    my $sbar = IMAP::Progress->new( max => $max, length => 10 );
+
+    print "\n\n";
+
+    $sbar->text('Processing headers:');
+
+    my $scounter = 0;
+
+    # Ugly.
+    #
+    # Iterate the whole list of fetched messages and fix
+    # each value returned.
+    #
+    for my $cur_id ( keys %$fetcher ) {
+
+        for my $cur_header (@headers) {
+
+            $fetcher->{$cur_id}->{$cur_header} =
+                stripper( $header_table{$cur_header},
+                          $fetcher->{$cur_id}->{$cur_header} );
+
+            $fetcher->{$cur_id}->{$cur_header} = '[EmptyValue]' unless $fetcher->{$cur_id}->{$cur_header};
+
+        }
+
+        $sbar->update( ++$scounter );
+        $sbar->write;
+
+    }
+
+    put_cache({ content_type => 'fetched_messages', folder => $folder, values => $fetcher });
+
+    return $fetcher;
+
+} # }}}
+
+# {{{ old_fetch_msgs
+#
+# Expects to receive a list of items representing the
+# message attributes we want to fetch.
+#
+# Returns a hashref of message id's as the keys, and the
+# values for each key are hashrefs of the message attributes
+# on which we want to report.
+#
+sub old_fetch_msgs {
+
+    my $folder = shift;
     #my @headers = @_;
 
     # Damn ye scalar leaks...
@@ -1891,6 +2020,7 @@ sub fetch_msgs {
                 stripper( $header_table{$cur_header},
                           $fetcher->{$cur_id}->{$cur_header} );
 
+            $fetcher->{$cur_id}->{$cur_header} = '[EmptyValue]' unless $fetcher->{$cur_id}->{$cur_header};
 
         }
 
@@ -1999,6 +2129,10 @@ sub threaded_fetch_msgs {
 
         #my $prog_bar = IMAP::Progress->new( max => $num_blocks, length => 10 );
 
+        #$prog_bar->text( "$msg_count remaining" );
+        #$prog_bar->update( 0 );
+        #$prog_bar->write;
+
         #my $iter = 1;
 
         #my $eta = [];
@@ -2055,17 +2189,20 @@ sub threaded_fetch_msgs {
                             # object...
                             #
                             my $imap_thread  = Mail::IMAPClient->new(
-                                Server    => $opts->{server},
-                                Port      => $opts->{port},
-                                User      => $opts->{user},
-                                Password  => $opts->{password},
-                                Keepalive => $opts->{Keepalive},
-                                Fast_io   => $opts->{Fast_io},
-                                Ssl       => $opts->{Ssl},
-                                Uid       => 0,
-                                Clear     => 100,
-                                #Debug     => $opts->{debug} . '.' . $cur_bucket,
-                                #Debug_fh  => *DBG,
+                                        Server           => $opts->{server},
+                                        Port             => $opts->{port},
+                                        User             => $opts->{user},
+                                        Password         => $opts->{password},
+                                        Keepalive        => $opts->{Keepalive},
+                                        Fast_io          => $opts->{Fast_io},
+                                        Ssl              => $opts->{Ssl},
+                                        Maxcommandlength => $opts->{Maxcommandlength},
+                                        Reconnectretry   => $opts->{Reconnectretry},
+                                        Uid              => 0,
+                                        Clear            => 100,
+                                    #Debug          => $opts->{debug} . '.' . $cur_bucket,
+                                    #Debug_fh       => *DBG,
+
                             ) or die "Cannot connect to host : $@";
 
                             #show_error( "CUR BUCKET: " . Dumper( $cur_bucket ) );
@@ -2372,13 +2509,13 @@ sub threaded_fetch_msgs {
 
             $fetcher->{$cur_id}->{$cur_header} = '[EmptyValue]' unless $fetcher->{$cur_id}->{$cur_header};
 
-            # Keep the counter from updating too
-            # frequently...
-            if ( ( ( $scounter % 100 ) + 1 )  == 100 ) {
-                $sbar->update( $scounter++ );
-                $sbar->write;
-            }
+        }
 
+        # Keep the counter from updating too frequently...
+        #
+        if ( ( ( $scounter % 20 ) + 1 )  == 20 ) {
+            $sbar->update( $scounter++ );
+            $sbar->write;
         }
 
     }
@@ -2841,6 +2978,8 @@ sub estimate_completion_time {
 
 sub recon {
 
+    return;
+
     # Separated this into a separate small function trying
     # to make my code look a little less cluttered...  :(
     #
@@ -2885,6 +3024,8 @@ sub sequence_chunker {
     }
 
     #ddump( 'seq_objects', \@seq_objects ) if $opts->{debug};
+
+    verbose( "Sequences: " . Dumper( \@seq_objects ) );
 
     return @seq_objects;
 
@@ -2971,6 +3112,10 @@ sub threaded_sequence_chunker {
     #die_clean( 0, "Quitting..." );
 
     #return $seq_objects;
+
+
+    verbose( "Sequences: " . Dumper( $msg_set_buckets ) );
+
     return $msg_set_buckets;
 
 } # }}}
@@ -3357,7 +3502,7 @@ sub die_clean {
     #
     @_ = ();
 
-    if ( defined $imap and ref $imap ) {
+    if ( defined $imap && ref $imap && $imap->IsConnected ) {
         $imap->disconnect;
     }
 
@@ -3365,12 +3510,12 @@ sub die_clean {
 
     print "\n$msg\n";
 
-    if ( $cache->{updated} && $err == 0 ) {
-        print "\nWriting cache...\n";
-        store( $cache, $opts->{cache_file} );
-        my $cache_size = (stat( $opts->{cache_file} ))[7];
-        print 'Cache size: ' . convert_bytes($cache_size) . "\n";
-    }
+   #if ( $cache->{updated} && $err == 0 ) {
+   #    print "\nWriting cache...\n";
+   #    store( $cache, $opts->{cache_file} );
+   #    my $cache_size = (stat( $opts->{cache_file} ))[7];
+   #    print 'Cache size: ' . convert_bytes($cache_size) . "\n";
+   #}
 
     exit $err;
 
@@ -3612,6 +3757,18 @@ Corresponds to the Mail::IMAPClient Keepalive option.
 Corresponds to the Mail::IMAPClient Fast_io option to allow buffered I/O.
 
 (default: true)
+
+=item B<--Reconnectretry>
+
+Corresponds to the Mail::IMAPClient Reconnectretry option to and re-establish lost connections.
+
+(default: 3)
+
+=item B<--Maxcommandlength>
+
+Corresponds to the Mail::IMAPClient Maxcommandlength option to limit the size of individual fetches.
+
+(default: 1000)
 
 =item B<--Ssl>
 
