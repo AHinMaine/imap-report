@@ -524,15 +524,20 @@ while (1) {
 
     } elsif ( $action eq $reports->{messages_by_subject_report} ) {
 
-        @report = messages_by_subject_report();
+        #@report = messages_by_subject_report();
+        @report = messages_by_header_report({ header => 'Subject' });
 
     } elsif ( $action eq $reports->{messages_by_from_address_report} ) {
 
-        @report = messages_by_from_address_report();
+        #@report = messages_by_from_address_report();
+
+        @report = messages_by_header_report({ header => 'From' });
 
     } elsif ( $action eq $reports->{messages_by_to_address_report} ) {
 
-        @report = messages_by_to_address_report();
+        #@report = messages_by_to_address_report();
+
+        @report = messages_by_header_report({ header => 'To' });
 
     } elsif ( $action eq $reports->{list} ) {
 
@@ -605,9 +610,6 @@ sub biggest_messages_report {
     print "\n\nFetching message details...\n";
 
     my $stime = time;
-
-    #my $fetched_messages = fetch_msgs( $folder );
-    #my $fetched_messages = threaded_fetch_msgs( $folder );
 
     my $fetched_messages =
         $use_threaded_mode && $num >= $opts->{maxfetch}
@@ -704,7 +706,7 @@ sub biggest_messages_report {
             # paste into gmail directly to quickly find the
             # current message.
             #
-            push @breport, generate_search_string( $folder, $_->[1], $_->[2] ) . "\n\n"
+            push @breport, generate_subject_search_string( $folder, $_->[1], $_->[2] ) . "\n\n"
                 if $opts->{server} eq 'imap.gmail.com';
 
         }
@@ -735,9 +737,6 @@ sub size_report {
     print "\n\nFetching message details for folder '$folder'...\n\n";
 
     my $stime = time;
-
-    #my $msgs = fetch_msgs( $folder );
-    #my $msgs = threaded_fetch_msgs( $folder );
 
     my $msgs =
         $use_threaded_mode
@@ -848,7 +847,7 @@ sub messages_by_subject_report {
 
     }
 
-    push @cur_report, 'Total messages processed: ' . scalar(keys %$msgs) . "\n\n";
+    push @cur_report, "\n\nTotal messages processed: " . scalar(keys %$msgs) . "\n\n";
     push @cur_report, 'Top ' . $opts->{top} . " subjects: \n\n\n";
     push @cur_report, "Count\t\t\tSubject\n" . '-' x 60 . "\n";
 
@@ -924,6 +923,115 @@ sub messages_by_subject_report {
 
     }
 
+
+    push @cur_report, "\n\n\nTime to fetch: $elapsed seconds\n";
+    push @cur_report, "Iterated " . scalar( keys %$msgs ) . " messages.\n\n";
+
+    return @cur_report;
+
+} # }}}
+
+# {{{ messages_by_header_report
+#
+# Report sorted by whatever header...
+#
+sub messages_by_header_report {
+
+    my $args = shift;
+
+    # Damn ye scalar leaks...
+    #
+    @_ = ();
+
+    my $header = $args->{header};
+
+    return unless $header;
+
+    return unless grep $header eq $_, keys %header_table;
+
+    my @cur_report;
+
+    my $report_type = $reports->{messages_by_from_address_report}
+        if $header eq 'From';
+
+    my $folder = folder_choice({ folders => $imap_folders, report_type => $report_type });
+
+    return unless $folder;
+
+    my $stime = time;
+
+    my $num = $imap->message_count;
+
+    my $msgs =
+        $use_threaded_mode && $num >= $opts->{maxfetch}
+        ? threaded_fetch_msgs( $folder )
+        : fetch_msgs( $folder )
+        ;
+
+    my $ftime = time;
+    my $elapsed = $ftime - $stime;
+
+    my $header_stats = {};
+
+    for ( keys %$msgs ) {
+
+        my $imap_header = $msgs->{$_}->{ $header_table{$header} };
+
+        if ( defined $header_stats->{$imap_header} ) {
+            $header_stats->{$imap_header}++;
+        } else {
+            $header_stats->{$imap_header} = 1;
+        }
+
+    }
+
+    push @cur_report, 'Total messages processed: ' . scalar( keys %$msgs ) . "\n\n";
+    push @cur_report, 'Top ' . $opts->{top} . " $header addresses: \n\n\n";
+    push @cur_report, "Count\t\t\t$header\n" . '-' x 60 . "\n";
+
+    my $counter = 1;
+
+    # sort the from address by the count of their
+    # occurrences.
+    #
+    for ( reverse sort { $header_stats->{$a} <=> $header_stats->{$b} } keys %$header_stats ) {
+
+        push @cur_report, $header_stats->{$_}
+        . "\t\t\t"
+        . $_
+        . "\n"
+        ;
+
+        $counter++;
+
+        last if $counter >= $opts->{top};
+
+    }
+
+    push @cur_report, "\n\n" . '-' x 60 . "\n\n";
+
+    push @cur_report,
+          "\n\n\n"
+        . '-' x 60 . "\n\n"
+        . "All messages, sorted by $header\n\n\n"
+        . "Date\t\t\t\t\tSize\t\t$header\n"
+        . '-' x 60 . "\n\n";
+
+    # The entire list of messages, sorted by the chosen
+    # header field.
+    #
+    for ( sort { $msgs->{$a}->{$header_table{$header}} cmp $msgs->{$b}->{$header_table{$header}} } keys %$msgs ) {
+
+        push @cur_report,
+            $msgs->{$_}->{$header_table{'Date'}}
+            . "\t\t"
+            . convert_bytes( $msgs->{$_}->{$header_table{'Size'}} )
+            . "\t\t"
+            . $msgs->{$_}->{$header_table{$header}}
+            . "\n"
+            ;
+
+    }
 
     push @cur_report, "\n\n\nTime to fetch: $elapsed seconds\n";
     push @cur_report, "Iterated " . scalar( keys %$msgs ) . " messages.\n\n";
@@ -2890,6 +2998,8 @@ sub stripper {
     $field =~ s/\n+//;
     $field =~ s/\r+//;
     $field =~ s/\R+//;
+    $field =~ s/^\s+//;
+    $field =~ s/\s+$//;
 
     # Strip off the name of the envelope attribute
     #
@@ -2902,6 +3012,20 @@ sub stripper {
     if ( $name eq 'From' ) {
         $field =~ m/[<](.*)[>]/;
         $field = $1;
+    }
+
+    # Strip off the subject cruft...
+    #
+    if ( $name eq 'Subject' ) {
+        $field =~ s/^Re:\s+//gi;
+        $field =~ s/^Fwd:\s+//gi;
+        $field =~ s/\s+Re:\s+//gi;
+        $field =~ s/\s+Fwd:\s+//gi;
+    }
+
+
+    if ( ! $field ) {
+        $field = ']]EMPTY[[';
     }
 
     return $field;
@@ -2960,13 +3084,13 @@ sub break_fetch {
 
 } # }}}
 
-# {{{ generate_search_string
+# {{{ generate_subject_search_string
 #
 # To display a helpful string you can cut and paste directly
 # into the gmail search pane to search for the reported
 # message.
 #
-sub generate_search_string {
+sub generate_subject_search_string {
 
     my ( $folder, $date, $subject ) = @_;
 
@@ -3018,6 +3142,75 @@ sub generate_search_string {
     return
         join( ' ',
               "subject:\"$subject\"",
+              $adate,
+              $bdate,
+              $label );
+
+} # }}}
+
+# {{{ generate_search_string
+#
+# To display a helpful string you can cut and paste directly
+# into the gmail search pane to search for the reported
+# message.
+#
+sub generate_search_string {
+
+    my $args = shift;
+
+    # Damn ye scalar leaks...
+    #
+    @_ = ();
+
+
+    my $folder = $args->{folder};
+    my $date   = $args->{date};
+    my $header = $args->{header};
+    my $value  = $args->{value};
+
+    my %folders = (
+                    'INBOX'             => 'in:inbox',
+                    '[Gmail]/Sent Mail' => 'is:sent',
+                    'Sent'              => 'is:sent',
+                    'Sent Items'        => 'is:sent',
+                    '[Gmail]/Spam'      => 'is:spam',
+                    '[Gmail]/Starred'   => 'is:starred',
+                    '[Gmail]/All Mail'  => 'in:anywhere',
+    );
+
+    my $label;
+
+    if ( defined $folders{$folder} ) {
+        $label = $folders{$folder};
+    } else {
+        $label = 'label:' . '"' . $folder . '"';
+    }
+
+    my $dm = Date::Manip::Date->new();
+
+    my ( $bdate, $adate );
+
+    my $aresult = $dm->parse($date);
+
+    if ( $aresult ) {
+        $bdate = '';
+        $adate = '';
+    } else {
+
+        my $parsed_adate = $dm->printf('%Y/%m/%d');
+        my $aepoch       = $dm->printf('%s');
+        my $bepoch       = $aepoch + ( 24 * 60 * 60 );
+        my $bresult      = $dm->parse("epoch $bepoch");
+        my $parsed_bdate = $dm->printf('%Y/%m/%d');
+
+        $adate = "after:$parsed_adate";
+        $bdate = "before:$parsed_bdate";
+
+    }
+
+    return
+        join( ' ',
+              "$header:\"$value\"",
               $adate,
               $bdate,
               $label );
