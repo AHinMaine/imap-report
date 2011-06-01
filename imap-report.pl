@@ -236,6 +236,8 @@ use Date::Manip::Date;
 
 my $use_threaded_mode = 0;
 
+# Trying to make threads optional.
+#
 if ( eval 'require threads;' ) {
     #require threads;
     import threads ( 'exit' => 'threads_only' );
@@ -284,6 +286,7 @@ $opts->{cache_age}         = 24 * 60 * 60;
 $opts->{conf}              = "$ENV{HOME}/.imapreportrc";
 $opts->{force}             = 0;
 $opts->{list}              = 0;
+$opts->{types}             = 0;
 $opts->{threads}           = 1;
 $opts->{use_threaded_mode} = $use_threaded_mode;
 
@@ -300,6 +303,8 @@ GetOptions(
         'maxfetch=i',
         'filters|folder|search=s@{,}',
         'exclude=s@{,}',
+        'report=s',
+        'types!',
         'list!',
         'log=s',
         'conf=s',
@@ -317,6 +322,22 @@ GetOptions(
         'use_threaded_mode!',
 
 );
+
+if ( $opts->{list} ) {
+    $opts->{report} = 'list';
+}
+
+if ( $opts->{types} ) {
+    show_report_types();
+}
+
+if ( $opts->{Ssl} ) {
+    eval {
+        require IO::Socket::SSL;
+        import IO::Socket::SSL;
+        1;
+    } || die_clean( 1, "IO::Socket::SSL module not found\n" );
+}
 
 my @valid_threads = ( 1, 2, 3, 5, 7, 11, 13, 17 );
 
@@ -340,12 +361,16 @@ if ( ! defined $opts->{password} && ! $opts->{password} ) {
     $opts->{password} = password_prompt();
 }
 
+# Just shovel any remaining args onto the list of filters.
+#
 if ( defined @ARGV && scalar @ARGV ) {
     push @{$opts->{filters}}, $_ for @ARGV;
 }
 
-print "ARGV: $_\n" for @ARGV;
+#print "ARGV: $_\n" for @ARGV;
 
+# Damn ye scalar leaks...
+#
 @_ = ();
 
 verbose( qq[
@@ -390,20 +415,7 @@ my %header_table = (
 );
 
 
-# These are the types of reports that can be run.
-#
-my $reports = {
-
-    folder_message_count_report     => 'Total count of messages in ALL folders',
-    folder_message_sizes_report     => 'Total size of messages in ALL folders',
-    messages_by_subject_report      => 'Folder report: All messages sorted by Subject',
-    messages_by_from_address_report => 'Folder report: All messages sorted by From address',
-    messages_by_to_address_report   => 'Folder report: All messages sorted by To address',
-    biggest_messages_report         => 'Folder report: Largest messages',
-    size_report                     => 'Folder report: Total size of messages',
-    list                            => 'Display the current list of folders',
-
-};
+my $reports = report_types();
 
 print "Using IMAP Server: "
     . $opts->{server}
@@ -433,10 +445,14 @@ if ( $imap->IsAuthenticated ) {
     print "Login successful.\n";
 }
 
-my $progress_queue = Thread::Queue->new();
-my $fetched_queue  = Thread::Queue->new();
-my $fetcher_status = Thread::Queue->new();
-my $sequence_queue = Thread::Queue->new();
+our ( $progress_queue, $fetched_queue, $fetcher_status, $sequence_queue );
+
+if ( $use_threaded_mode ) {
+    $progress_queue = Thread::Queue->new();
+    $fetched_queue  = Thread::Queue->new();
+    $fetcher_status = Thread::Queue->new();
+    $sequence_queue = Thread::Queue->new();
+}
 
 my $cache = init_cache( $opts->{cache_file} );
 
@@ -445,7 +461,7 @@ my $cache = init_cache( $opts->{cache_file} );
 # to gather the list of folders each time the menu is
 # displayed.
 #
-my $imap_folders = fetch_folders({ filters => $opts->{filters}, excludes => $opts->{exclude} }); #$imap->folders
+my $imap_folders = fetch_folders({ filters => $opts->{filters}, excludes => $opts->{exclude} });
 
 die_clean( 1, "No folders in fetched lists!" ) unless scalar(@$imap_folders);
 
@@ -471,8 +487,8 @@ while (1) {
 
     # Choose what type of report we want to run.
     #
-    my $action = $opts->{list}
-        ? $reports->{list}
+    my $action = $opts->{report}
+        ? $reports->{$opts->{report}}
         : choose_action({ banner  => $banner,
                           reports => $reports });
 
@@ -535,6 +551,25 @@ while (1) {
 # {{{ subs
 #
 
+# {{{ report_types
+#
+sub report_types {
+
+    # These are the types of reports that can be run.
+    #
+    return {
+        folder_message_count_report     => 'Total count of messages in ALL folders',
+        folder_message_sizes_report     => 'Total size of messages in ALL folders',
+        messages_by_subject_report      => 'Folder report: All messages sorted by Subject',
+        messages_by_from_address_report => 'Folder report: All messages sorted by From address',
+        messages_by_to_address_report   => 'Folder report: All messages sorted by To address',
+        biggest_messages_report         => 'Folder report: Largest messages',
+        size_report                     => 'Folder report: Total size of messages',
+        list                            => 'Display the current list of folders',
+    };
+
+} # }}}
+
 # {{{ list_folders
 #
 sub list_folders {
@@ -553,6 +588,8 @@ sub list_folders {
 #
 sub biggest_messages_report {
 
+    # Damn ye scalar leaks...
+    #
     @_ = ();
 
     my $report_type = $reports->{biggest_messages_report};
@@ -573,7 +610,7 @@ sub biggest_messages_report {
     #my $fetched_messages = threaded_fetch_msgs( $folder );
 
     my $fetched_messages =
-        $use_threaded_mode
+        $use_threaded_mode && $num >= $opts->{maxfetch}
         ? threaded_fetch_msgs( $folder )
         : fetch_msgs( $folder )
         ;
@@ -685,6 +722,8 @@ sub biggest_messages_report {
 #
 sub size_report {
 
+    # Damn ye scalar leaks...
+    #
     @_ = ();
 
     my $report_type = $reports->{size_report};
@@ -750,6 +789,8 @@ sub size_report {
 #
 sub messages_by_subject_report {
 
+    # Damn ye scalar leaks...
+    #
     @_ = ();
 
     my $report_type = $reports->{messages_by_subject_report};
@@ -898,6 +939,8 @@ sub messages_by_subject_report {
 #
 sub messages_by_from_address_report {
 
+    # Damn ye scalar leaks...
+    #
     @_ = ();
 
     my $report_type = $reports->{messages_by_from_address_report};
@@ -1002,6 +1045,8 @@ sub messages_by_from_address_report {
 #
 sub messages_by_to_address_report {
 
+    # Damn ye scalar leaks...
+    #
     @_ = ();
 
     my $report_type = $reports->{messages_by_to_address_report};
@@ -1098,6 +1143,8 @@ sub messages_by_to_address_report {
 #
 sub folder_message_count_report {
 
+    # Damn ye scalar leaks...
+    #
     @_ = ();
 
     my $report_type = $reports->{folder_message_count_report};
@@ -1189,6 +1236,8 @@ sub folder_message_count_report {
 #
 sub folder_message_sizes_report {
 
+    # Damn ye scalar leaks...
+    #
     @_ = ();
 
     my $report_type = $reports->{folder_message_sizes_report};
@@ -1198,7 +1247,7 @@ sub folder_message_sizes_report {
     # operation on a mailbox with a ton of messages.
     #
     show_error(
-            "Caution: This operation will iterate EVERY SINGLE message\n"
+          "Caution: This operation will iterate EVERY SINGLE message\n"
         . "in your IMAP mailbox.  While only the message size\n"
         . "attribute is collected (full email messages are not\n"
         . "downloaded), this will still take a VERY long time!\n"
@@ -1279,6 +1328,8 @@ sub choose_action {
 
     my $args = shift;
 
+    # Damn ye scalar leaks...
+    #
     @_ = ();
 
     my $banner       = $args->{banner};
@@ -1321,6 +1372,8 @@ sub folder_choice {
 
     my $args = shift;
 
+    # Damn ye scalar leaks...
+    #
     @_ = ();
 
     my $folders = $args->{folders};
@@ -1378,6 +1431,8 @@ sub show_folder_picker {
 
     my $args = shift;
 
+    # Damn ye scalar leaks...
+    #
     @_ = ();
 
     my $banner      = $args->{banner};
@@ -1429,6 +1484,8 @@ sub fetch_folders {
 
     my $args = shift;
 
+    # Damn ye scalar leaks...
+    #
     @_ = ();
 
     my $filter_list   =
@@ -1521,6 +1578,8 @@ sub fetch_msgs {
     my $folder = shift;
     #my @headers = @_;
 
+    # Damn ye scalar leaks...
+    #
     @_ = ();
 
     my @headers;
@@ -1589,6 +1648,10 @@ sub fetch_msgs {
         my $num_blocks = scalar @sequences;
 
         my $prog_bar = IMAP::Progress->new( max => $num_blocks, length => 10 );
+
+        $prog_bar->text( "$msg_count remaining" );
+        $prog_bar->update( 0 );
+        $prog_bar->write;
 
         my $iter = 1;
 
@@ -1698,7 +1761,7 @@ sub fetch_msgs {
 
     #ddump( 'fetcher', $fetcher ) if $opts->{debug};
 
-    my $max = ( scalar(keys %$fetcher) * scalar(@headers) );
+    my $max = ( scalar(keys %$fetcher) );
     my $sbar = IMAP::Progress->new( max => $max, length => 10 );
 
     print "\n\n";
@@ -1709,7 +1772,7 @@ sub fetch_msgs {
 
     # Ugly.
     #
-    # Iterated the whole list of fetched messages and fix
+    # Iterate the whole list of fetched messages and fix
     # each value returned.
     #
     for my $cur_id ( keys %$fetcher ) {
@@ -1720,10 +1783,11 @@ sub fetch_msgs {
                 stripper( $header_table{$cur_header},
                           $fetcher->{$cur_id}->{$cur_header} );
 
-            $sbar->update( ++$scounter );
-            $sbar->write;
 
         }
+
+        $sbar->update( ++$scounter );
+        $sbar->write;
 
     }
 
@@ -1746,6 +1810,8 @@ sub threaded_fetch_msgs {
 
     my $folder = shift;
 
+    # Damn ye scalar leaks...
+    #
     @_ = ();
 
     my @headers;
@@ -1867,7 +1933,8 @@ sub threaded_fetch_msgs {
                             #
                             my $msg_set_lists = shift;
 
-                            # avoid pesky scalar leaks...
+                            # Damn ye scalar leaks...
+                            #
                             @_ = ();
 
                             # All of the results from iterating the
@@ -2231,6 +2298,8 @@ sub get_folder_size {
 
     my $folder = shift;
 
+    # Damn ye scalar leaks...
+    #
     @_ = ();
 
     recon();
@@ -2278,6 +2347,8 @@ sub init_cache {
 
     my $cfile = shift;
 
+    # Damn ye scalar leaks...
+    #
     @_ = ();
 
     my $c;
@@ -2328,6 +2399,8 @@ sub check_cache {
     my $content_type = shift;
     my $value = shift;
 
+    # Damn ye scalar leaks...
+    #
     @_ = ();
 
     my $cur_time = time;
@@ -2449,6 +2522,8 @@ sub put_cache {
 
     my $args = shift;
 
+    # Damn ye scalar leaks...
+    #
     @_ = ();
 
     my $content_type = $args->{content_type};
@@ -2503,6 +2578,8 @@ sub threaded_progress_bar {
 
     my $pbar = shift;
 
+    # Damn ye scalar leaks...
+    #
     @_ = ();
 
     my $stats = [];
@@ -2631,6 +2708,8 @@ sub estimate_completion_time {
     my $stats                  = shift;
     my $total_number_of_blocks = shift;
 
+    # Damn ye scalar leaks...
+    #
     @_ = ();
 
     my $number_of_blocks_completed = scalar(@$stats);
@@ -2681,6 +2760,8 @@ sub sequence_chunker {
     my $all_msg_ids = shift;
     my $max         = shift;
 
+    # Damn ye scalar leaks...
+    #
     @_ = ();
 
     show_error( 'Error processing sequences' ) unless $all_msg_ids;
@@ -2722,6 +2803,8 @@ sub threaded_sequence_chunker {
     my $all_msg_ids = shift;
     my $max         = shift;
 
+    # Damn ye scalar leaks...
+    #
     @_ = ();
 
     show_error( 'Error processing sequences' ) unless $all_msg_ids;
@@ -2797,6 +2880,8 @@ sub stripper {
     my $name  = shift;
     my $field = shift;
 
+    # Damn ye scalar leaks...
+    #
     @_ = ();
 
     return unless $name;
@@ -2820,6 +2905,31 @@ sub stripper {
     }
 
     return $field;
+
+} # }}}
+
+# {{{ show_report_types
+#
+sub show_report_types {
+
+my $types = report_types();
+
+print "\n\nType                                 Description\n"
+    . '-' x 75
+    . "\n";
+
+for ( sort { $types->{$a} cmp $types->{$b} } keys %$types ) {
+
+# pretty print the types of reports...
+#
+format STDOUT = 
+@<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<  @*
+$_, $types->{$_}
+.
+write;
+}
+
+die_clean( 0, '' );
 
 } # }}}
 
@@ -2860,6 +2970,8 @@ sub generate_search_string {
 
     my ( $folder, $date, $subject ) = @_;
 
+    # Damn ye scalar leaks...
+    #
     @_ = ();
 
 
@@ -2922,6 +3034,8 @@ sub generate_search_string {
 #
 sub read_config_file {
 
+    # Damn ye scalar leaks...
+    #
     @_ = ();
 
     my $cf = $opts->{conf};
@@ -2977,6 +3091,8 @@ sub convert_bytes {
 
     my $bytes = shift;
 
+    # Damn ye scalar leaks...
+    #
     @_ = ();
 
     my $KB = $bytes / 1024;
@@ -2995,6 +3111,8 @@ sub convert_seconds {
 
     my $seconds = shift;
 
+    # Damn ye scalar leaks...
+    #
     @_ = ();
 
     my $days  = int( $seconds / ( 24 * 60 * 60 ) );
@@ -3019,6 +3137,8 @@ sub die_signal {
 
     my @args = @_;
 
+    # Damn ye scalar leaks...
+    #
     @_ = ();
 
     if ( scalar @args > 0 ) {
@@ -3040,6 +3160,8 @@ sub die_clean {
     my $err = shift;
     my $msg = shift;
 
+    # Damn ye scalar leaks...
+    #
     @_ = ();
 
     if ( defined $imap and ref $imap ) {
@@ -3050,7 +3172,7 @@ sub die_clean {
 
     print "\n$msg\n";
 
-    if ( $cache->{updated} ) {
+    if ( $cache->{updated} && $err == 0 ) {
         print "\nWriting cache...\n";
         store( $cache, $opts->{cache_file} );
         my $cache_size = (stat( $opts->{cache_file} ))[7];
@@ -3153,6 +3275,8 @@ sub print_report {
 
     my $report = shift;
 
+    # Damn ye scalar leaks...
+    #
     @_ = ();
 
     my $file = "$ENV{HOME}/imap-report.txt";
@@ -3187,7 +3311,7 @@ Mail
 
 =head1 README
 
-Primarily intended for use with a gmail account, this script can generate various reports on an imap mailbox.  I wrote this mostly out of frustration from google's lack of features to allow you to prune your mailbox.
+Primarily intended for use with a gmail account, this script can generate various reports on an imap mailbox.  I wrote this mostly out of frustration from google's lack of features to allow you to prune your mailbox.  Then it started to amuse me and I decided to try my first attempt at writing threaded perl.  It's not going well...
 
 There is a crude caching mechanism present to speed things up after the message envelope information is loaded.  Even though only header information is fetched and cached, this is still a very heavy, time consuming, memory hungry operation on a huge mailbox.  The only operation that doesn't populate the cache automatically is the counting of all folders.  All other report types end up needing to actually iterate messages and therefor populates the cache.  Otherwise the count operation just uses the simple messages_count method of Mail::IMAPClient which uses the STATUS function of IMAP on an individual folder.
 
