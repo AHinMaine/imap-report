@@ -2048,6 +2048,8 @@ sub threaded_fetch_msgs {
 
     my $folder = shift;
 
+    verbose( "THREADED FOLDER: " . Dumper( $folder ) );
+
     # Damn ye scalar leaks...
     #
     @_ = ();
@@ -2068,6 +2070,8 @@ sub threaded_fetch_msgs {
     my $fetcher = {};
 
     $fetcher = check_cache( 'fetched_messages', $folder );
+
+    verbose( "FETCHER NOW: " . Dumper( $fetcher ) );
 
     return $fetcher if $fetcher;
 
@@ -2119,7 +2123,7 @@ sub threaded_fetch_msgs {
 
         #ddump( 'sequences', \@sequences ) if $opts->{debug};
 
-        my $num_blocks;
+        #my $num_blocks;
 
        #for my $cur_bucket ( keys %$threaded_sequences ) {
        #    for my $cur_msg_set_list ( @{$threaded_sequences->{$cur_bucket}} ) {
@@ -2144,13 +2148,11 @@ sub threaded_fetch_msgs {
         #
         #$SIG{'INT'} = 'break_fetch';
 
-        my $imap_objs = {};
-
         my $threads = [];
 
-        # Each thread will stuff stats in the global
-        # progress_queue object.  Spawn this thread which
-        # will keep watching the queue and computing stats.
+        # Each thread will stuff stats in the global progress_queue object.
+        # Spawn this thread which will keep watching the queue and computing
+        # stats.
         #
         {
 
@@ -2158,112 +2160,40 @@ sub threaded_fetch_msgs {
 
       #_#   my $progress_thread = threads->create( \&threaded_progress_bar, $progress_bar )->detach();
 
+            print "\nInitiating fetcher threads: ";
+
             for my $cur_bucket ( sort keys %$threaded_sequences ) {
 
-                print "\nInitiating fetcher thread $cur_bucket...\n" if $opts->{verbose};
+                print "$cur_bucket ";
 
                 #$threads->[$cur_bucket] = threads->create(
 
                 {
 
-                    threads->create(
-
-                        sub {
-
-                            # Each thread gets an appropriate list
-                            # of M::I::MessageSet objects
-                            #
-                            my $msg_set_list = shift;
-
-                            # Damn ye scalar leaks...
-                            #
-                            @_ = ();
-
-                            # All of the results from iterating the
-                            # MessageSet objects will be merged into
-                            # this hashref.
-                            #
-                            #my $this_fetcher = {};
-
-                            # Each thread gets its own imap
-                            # object...
-                            #
-                            my $imap_thread  = Mail::IMAPClient->new(
-                                        Server           => $opts->{server},
-                                        Port             => $opts->{port},
-                                        User             => $opts->{user},
-                                        Password         => $opts->{password},
-                                        Keepalive        => $opts->{Keepalive},
-                                        Fast_io          => $opts->{Fast_io},
-                                        Ssl              => $opts->{Ssl},
-                                        Maxcommandlength => $opts->{Maxcommandlength},
-                                        Reconnectretry   => $opts->{Reconnectretry},
-                                        Uid              => 0,
-                                        Clear            => 100,
-                                        #Debug            => $opts->{debug} . '.' . $cur_bucket,
-                                        #Debug_fh         => *DBG,
-
-                            ) or die "Cannot connect to host : $@";
-
-                            #show_error( "CUR BUCKET: " . Dumper( $cur_bucket ) );
-
-                            # Reselect the folder so this thread is in the right
-                            # place.  No validation or exists check necessary at
-                            # this stage.
-                            #
-                            if ( ! $imap_thread->examine($folder) ) {
-                                warn "Error selecting folder $folder in thread $cur_bucket: $@\n";
-                                last;
-                            }
-
-                            my $msg_set_object = shift( @$msg_set_list );
-
-                            my @cur_msg_id_list = $msg_set_object->unfold;
-
-                            my $cur_fetcher = $imap_thread->fetch_hash( \@cur_msg_id_list, @headers);
-
-                            # This thread is done, tear down the imap
-                            # connection.
-                            #
-                            $imap_thread->disconnect;
-
-                            {
-                                lock( $fetched_queue );
-
-                                for my $m_id ( keys %$cur_fetcher ) {
-                                    next unless $m_id;
-                                    $fetched_queue->enqueue( $m_id => $cur_fetcher->{$m_id} );
-                                }
-
-                            }
-
-
-                            # Stick a message on the status
-                            # queue that we're done.
-                            #
-                            {
-                                lock($fetcher_status);
-                                $fetcher_status->enqueue( 'complete' );
-                            }
-
-                            #return $this_fetcher;
-
-                        },
-                        # Here's the parameter that is passed to
-                        # the above coderef.
-                        #
-                        $threaded_sequences->{$cur_bucket}
-
-                    # Detaching thread because we will read our
-                    # results from the fetched messages queue so
-                    # we don't need to have the thread return
-                    # anything.
+                    # Detaching thread because we will read our results from the
+                    # fetched messages queue so we don't need to have the thread
+                    # return anything.
                     #
-                    )->detach();
+                    #)->detach();
+
+                    $threads->[$cur_bucket] = threads->create(
+
+                        { 'context' => 'void',
+                          'exit'    => 'thread_only' },
+
+                        \&imap_thread,
+
+                            $folder,
+                            $cur_bucket,
+                            $threaded_sequences->{$cur_bucket}
+
+                    );
 
                 }
 
             }
+
+            print "\n";
 
 
             # Before proceding, wait for each thread to finish
@@ -2291,6 +2221,12 @@ sub threaded_fetch_msgs {
 
             }
 
+            # Rejoin the threads for a clean exit.
+            #
+            for my $cur_bucket ( sort keys %$threaded_sequences ) {
+                $threads->[$cur_bucket]->join();
+            }
+
             print "\nThreads complete...\n" if $opts->{verbose};
 
         }
@@ -2308,8 +2244,6 @@ sub threaded_fetch_msgs {
 
             lock($fetched_queue);
 
-           #$Data::Dumper::Varname = 'from_q_';
-
             my $pending = $fetched_queue->pending();
 
             print "Total messages pending for processing: $pending\n";
@@ -2320,41 +2254,9 @@ sub threaded_fetch_msgs {
 
            #my $parse_counter = 0;
 
-           #print "\n";
-
             my %from_fetched_queue = $fetched_queue->extract( 0, $pending );
 
-           # while ( $fetched_queue->pending() ) {
-
-           #     my @from_q = $fetched_queue->extract(0, $pending );
-
-           #     for my $fq ( @from_q ) {
-           #         #ddump( 'ref from_q', ref $from_q );
-           #         #ddump( 'from_q', @from_q );
-
-           #         #ddump( 'ref from_q', ref $from_q[$parse_counter]);
-           #         #ddump( 'from_q', $from_q[$parse_counter]);
-
-           #         #ddump( 'ref fq', ref $fq );
-           #         #ddump( 'fq', $fq );
-
-           #         @{$fetcher}{ keys %$fq } = values %$fq;
-
-           #     }
-
-           #    @{$fetcher}{ keys %$from_q } = values %$from_q;
-
-                # Keep the counter from updating too
-                # frequently...
-                #
-           #    if ( ( ( $parse_counter % 20 ) + 1 )  == 20 ) {
-           #        $bar->update( $parse_counter );
-           #        $bar->write;
-           #    }
-
-           #    $parse_counter++;
-
-            #}
+            #verbose( 'from_fetched_queue_hash: ' . Dumper( \%from_fetched_queue ) );
 
             @{$fetcher}{ keys %from_fetched_queue } = values %from_fetched_queue;
 
@@ -2404,7 +2306,8 @@ sub threaded_fetch_msgs {
                           $fetcher->{$cur_id}->{$cur_header} );
 
 
-            $fetcher->{$cur_id}->{$cur_header} = '[EmptyValue]' unless $fetcher->{$cur_id}->{$cur_header};
+            $fetcher->{$cur_id}->{$cur_header} = '[EmptyValue]'
+                unless $fetcher->{$cur_id}->{$cur_header};
 
         }
 
@@ -2427,6 +2330,93 @@ sub threaded_fetch_msgs {
     put_cache({ content_type => 'fetched_messages', folder => $folder, values => $fetcher });
 
     return $fetcher;
+
+} # }}}
+
+# {{{ imap_thread
+#
+sub imap_thread {
+
+    # Each thread gets an appropriate list of M::I::MessageSet objects
+    #
+    my $folder       = shift;
+    my $cur_bucket   = shift;
+    my $msg_set_list = shift;
+
+    my @headers;
+
+    # TODO
+    #
+    # Fix this header handling...
+    #
+    push @headers, $header_table{$_} for qw/Date Subject Size To From/;
+
+
+
+
+    # Damn ye scalar leaks...
+    #
+    #@_ = ();
+
+    # Each thread gets its own imap object...
+    #
+    my $imap_thread  = Mail::IMAPClient->new(
+                Server           => $opts->{server},
+                Port             => $opts->{port},
+                User             => $opts->{user},
+                Password         => $opts->{password},
+                Keepalive        => $opts->{Keepalive},
+                Fast_io          => $opts->{Fast_io},
+                Ssl              => $opts->{Ssl},
+                Maxcommandlength => $opts->{Maxcommandlength},
+                Reconnectretry   => $opts->{Reconnectretry},
+                Uid              => 0,
+                Clear            => 100,
+                #Debug            => $opts->{debug} . '.' . $cur_bucket,
+                #Debug_fh         => *DBG,
+
+    ) or die "Cannot connect to host : $@";
+
+    #show_error( "CUR BUCKET: " . Dumper( $cur_bucket ) );
+
+    # Reselect the folder so this thread is in the right place.  No validation
+    # or exists check necessary at this stage.
+    #
+    if ( ! $imap_thread->examine($folder) ) {
+        warn "Error selecting folder $folder in thread $cur_bucket: $@\n";
+        last;
+    }
+
+    my $msg_set_object = shift( @$msg_set_list );
+
+    my @cur_msg_id_list = $msg_set_object->unfold;
+
+    my $cur_fetcher = $imap_thread->fetch_hash( \@cur_msg_id_list, @headers);
+
+    # This thread is done, tear down the imap
+    # connection.
+    #
+    #$imap_thread->disconnect;
+
+    {
+        lock( $fetched_queue );
+
+        for my $m_id ( keys %$cur_fetcher ) {
+            next unless $m_id;
+            $fetched_queue->enqueue( $m_id => $cur_fetcher->{$m_id} );
+        }
+
+    }
+
+
+    # Stick a message on the status queue that we're done.
+    #
+    {
+        lock($fetcher_status);
+        $fetcher_status->enqueue( 'complete' );
+    }
+
+    return;
 
 } # }}}
 
@@ -3866,20 +3856,20 @@ sub die_clean {
     #
     @_ = ();
 
-    if ( defined $imap && ref $imap && $imap->IsConnected ) {
-        $imap->disconnect;
-    }
+   #if ( defined $imap && ref $imap && $imap->IsConnected ) {
+   #    $imap->disconnect;
+   #}
 
     close DBG;
 
     print "\n$msg\n";
 
-   #if ( $cache->{updated} && $err == 0 ) {
-   #    print "\nWriting cache...\n";
-   #    store( $cache, $opts->{cache_file} );
-   #    my $cache_size = (stat( $opts->{cache_file} ))[7];
-   #    print 'Cache size: ' . convert_bytes($cache_size) . "\n";
-   #}
+   if ( $cache->{updated} && $err == 0 ) {
+       print "\nWriting cache...\n";
+       store( $cache, $opts->{cache_file} );
+       my $cache_size = (stat( $opts->{cache_file} ))[7];
+       print 'Cache size: ' . convert_bytes($cache_size) . "\n";
+   }
 
     exit $err;
 
