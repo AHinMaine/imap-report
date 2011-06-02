@@ -358,12 +358,6 @@ if ( defined @ARGV && scalar @ARGV ) {
     push @{$opts->{filters}}, $_ for @ARGV;
 }
 
-#print "ARGV: $_\n" for @ARGV;
-
-# Damn ye scalar leaks...
-#
-@_ = ();
-
 verbose( qq[
 
            Server: $opts->{server}
@@ -448,9 +442,9 @@ if ( $imap->IsAuthenticated ) {
 our ( $progress_queue, $fetched_queue, $fetcher_status, $sequence_queue );
 
 if ( $use_threaded_mode ) {
-    $progress_queue = Thread::Queue->new();
     $fetched_queue  = Thread::Queue->new();
     $fetcher_status = Thread::Queue->new();
+    $progress_queue = Thread::Queue->new();
     $sequence_queue = Thread::Queue->new();
 }
 
@@ -467,17 +461,9 @@ my $imap_folders = fetch_folders({ filters => $opts->{filters}, excludes => $opt
 
 die_clean( 1, "No folders in fetched lists!" ) unless scalar(@$imap_folders);
 
-#ddump( 'imap_folders',  $imap_folders ) if $opts->{debug};
-
 # Keep looping until 'quit'
 #
 while (1) {
-
-    # Littering these recon functions in to make sure that
-    # our imap connection hasn't died somewhere along the
-    # way.
-    #
-    recon();
 
     my $banner =
         "\n(Current minimum size of message to report: "
@@ -594,10 +580,6 @@ sub list_folders {
 # messages below our 'min' size.
 #
 sub biggest_messages_report {
-
-    # Damn ye scalar leaks...
-    #
-    @_ = ();
 
     my $report_type = $reports->{biggest_messages_report};
 
@@ -726,10 +708,6 @@ sub biggest_messages_report {
 #
 sub size_report {
 
-    # Damn ye scalar leaks...
-    #
-    @_ = ();
-
     my $report_type = $reports->{size_report};
 
     my $folder = folder_choice({ folders => $imap_folders, report_type => $report_type });
@@ -789,10 +767,6 @@ sub size_report {
 # {{{ messages_by_subject_report
 #
 sub messages_by_subject_report {
-
-    # Damn ye scalar leaks...
-    #
-    @_ = ();
 
     my $report_type = $reports->{messages_by_subject_report};
 
@@ -941,10 +915,6 @@ sub messages_by_header_report {
 
     my $args = shift;
 
-    # Damn ye scalar leaks...
-    #
-    @_ = ();
-
     my $header = $args->{header};
 
     return unless $header;
@@ -1049,10 +1019,6 @@ sub messages_by_header_report {
 #
 sub messages_by_from_address_report {
 
-    # Damn ye scalar leaks...
-    #
-    @_ = ();
-
     my $report_type = $reports->{messages_by_from_address_report};
 
     my $folder = folder_choice({ folders => $imap_folders, report_type => $report_type });
@@ -1155,10 +1121,6 @@ sub messages_by_from_address_report {
 #
 sub messages_by_to_address_report {
 
-    # Damn ye scalar leaks...
-    #
-    @_ = ();
-
     my $report_type = $reports->{messages_by_to_address_report};
 
     my $folder = folder_choice({ folders => $imap_folders, report_type => $report_type });
@@ -1253,10 +1215,6 @@ sub messages_by_to_address_report {
 #
 sub folder_message_count_report {
 
-    # Damn ye scalar leaks...
-    #
-    @_ = ();
-
     my $report_type = $reports->{folder_message_count_report};
 
     my $total_message_count = 0;
@@ -1277,13 +1235,10 @@ sub folder_message_count_report {
 
     for ( @$imap_folders ) {
 
-        recon();
-
-        # Quick sanity check to see if the chosen folder
-        # really exists, not all that necessary because the
-        # folder list is well validated at the beginning of
-        # the script, but, just to be safe in case anything
-        # was modified during the runtime of this script...
+        # Quick sanity check to see if the chosen folder really exists, not all
+        # that necessary because the folder list is well validated at the
+        # beginning of the script, but, just to be safe in case anything was
+        # modified during the runtime of this script...
         #
         if ( ! check_cache( 'validated_folder_list', $_ ) ) {
 
@@ -1345,10 +1300,6 @@ sub folder_message_count_report {
 # {{{ folder_message_sizes_report
 #
 sub folder_message_sizes_report {
-
-    # Damn ye scalar leaks...
-    #
-    @_ = ();
 
     my $report_type = $reports->{folder_message_sizes_report};
 
@@ -1438,10 +1389,6 @@ sub choose_action {
 
     my $args = shift;
 
-    # Damn ye scalar leaks...
-    #
-    @_ = ();
-
     my $banner       = $args->{banner};
     my $report_types = $args->{reports};
 
@@ -1482,10 +1429,6 @@ sub folder_choice {
 
     my $args = shift;
 
-    # Damn ye scalar leaks...
-    #
-    @_ = ();
-
     my $folders = $args->{folders};
     my $type    = $args->{report_type};
 
@@ -1501,13 +1444,10 @@ sub folder_choice {
 
     next if $choice eq ']quit[';
 
-    recon();
-
-    # Quick sanity check to see if the chosen folder really
-    # exists, not all that necessary because the use of
-    # Term::Menus pretty much guarantees that we'll get a
-    # valid folder name, but this should at least catch it
-    # if there is a foldername with odd characters.
+    # Quick sanity check to see if the chosen folder really exists, not all that
+    # necessary because the use of Term::Menus pretty much guarantees that we'll
+    # get a valid folder name, but this should at least catch it if there is a
+    # foldername with odd characters.
     #
     if ( ! $imap->exists($choice) ) {
         show_error( "Error: $choice not a valid folder.\n\nRaw IMAP error output: \n" . $imap->LastError );
@@ -1540,10 +1480,6 @@ sub folder_choice {
 sub show_folder_picker {
 
     my $args = shift;
-
-    # Damn ye scalar leaks...
-    #
-    @_ = ();
 
     my $banner      = $args->{banner};
     my $folder_list = $args->{imap_folders};
@@ -1594,10 +1530,6 @@ sub fetch_folders {
 
     my $args = shift;
 
-    # Damn ye scalar leaks...
-    #
-    @_ = ();
-
     my $filter_list   =
         $args->{filters}
         ? $args->{filters}
@@ -1612,8 +1544,6 @@ sub fetch_folders {
 
     my $list         = [];
     my $menu_folders = [];
-
-    recon();
 
     $list = check_cache('folder_list');
 
@@ -1647,7 +1577,6 @@ sub fetch_folders {
     my $counter= 1;
 
     for my $ff ( @filtered_list ) {
-        recon();
         if ( $opts->{force} || check_cache( 'validated_folder_list', $ff ) ) {
 
             # The force option is allowed to short circuit
@@ -1687,10 +1616,6 @@ sub fetch_msgs {
 
     my $folder = shift;
 
-    # Damn ye scalar leaks...
-    #
-    @_ = ();
-
     my @headers;
 
     push @headers, $header_table{$_} for qw/Date Subject Size To From/;
@@ -1706,13 +1631,10 @@ sub fetch_msgs {
 
     return $fetcher if $fetcher;
 
-    recon();
-
-    # Quick sanity check to see if the chosen folder really
-    # exists, not all that necessary because the folder list
-    # is well validated at the beginning of the script, but,
-    # just to be safe in case anything was modified during
-    # the runtime of this script...
+    # Quick sanity check to see if the chosen folder really exists, not all that
+    # necessary because the folder list is well validated at the beginning of
+    # the script, but, just to be safe in case anything was modified during the
+    # runtime of this script...
     #
     if ( ! $imap->exists($folder) ) {
         show_error( "Error: $folder not a valid folder: $@\nLastError: " . $imap->LastError );
@@ -1801,240 +1723,6 @@ sub fetch_msgs {
 
 } # }}}
 
-# {{{ old_fetch_msgs
-#
-# Expects to receive a list of items representing the
-# message attributes we want to fetch.
-#
-# Returns a hashref of message id's as the keys, and the
-# values for each key are hashrefs of the message attributes
-# on which we want to report.
-#
-sub old_fetch_msgs {
-
-    my $folder = shift;
-    #my @headers = @_;
-
-    # Damn ye scalar leaks...
-    #
-    @_ = ();
-
-    my @headers;
-
-    push @headers, $header_table{$_} for qw/Date Subject Size To From/;
-
-    #ddump( 'headers',        \@headers )        if $opts->{debug};
-
-    # This will hold the entire result of fetching
-    # operations.
-    #
-    my $fetcher = {};
-
-    $fetcher = check_cache( 'fetched_messages', $folder );
-
-    return $fetcher if $fetcher;
-
-    recon();
-
-    # Quick sanity check to see if the chosen folder really
-    # exists, not all that necessary because the folder list
-    # is well validated at the beginning of the script, but,
-    # just to be safe in case anything was modified during
-    # the runtime of this script...
-    #
-    if ( ! $imap->exists($folder) ) {
-        show_error( "Error: $folder not a valid folder: $@\nLastError: " . $imap->LastError );
-        return ( 0, 0 );
-    }
-
-    $imap->examine($folder)
-        or show_error( "Error selecting $folder: $@\n" );
-
-
-    # One more quick sanity check to make sure we really are
-    # in a folder and that folder is in a select (examine)
-    # state.
-    #
-    if ( $imap->Folder() ) {
-
-        # This object will hold our message ids.
-        #
-        my $msgset = Mail::IMAPClient::MessageSet->new( $imap->messages );
-
-        my $msg_ids = [];
-
-        if ( $msgset ) {
-            $msg_ids = $msgset->unfold;
-        }
-
-        my $msg_count = scalar(@$msg_ids);
-
-        # Return empty handed if there are no messages in
-        # the folder.
-        #
-        return unless $msg_count;
-
-        # Take the list of message id's and break them up
-        # into smaller chunks in the form of an array of
-        # MessageSet objects.
-        #
-        my @sequences = sequence_chunker( $msg_ids, $opts->{maxfetch} );
-
-        #ddump( 'sequences', \@sequences ) if $opts->{debug};
-
-        my $num_blocks = scalar @sequences;
-
-        my $prog_bar = IMAP::Progress->new( max => $num_blocks, length => 10 );
-
-        $prog_bar->text( "$msg_count remaining" );
-        $prog_bar->update( 0 );
-        $prog_bar->write;
-
-        my $iter = 1;
-
-        my $eta = [];
-
-        # Trying to come up with a way of trapping a Ctrl-C
-        # to gracefully finish the current iteration and
-        # finish producing the report.  It doesn't work very
-        # well.
-        #
-        $SIG{'INT'} = 'break_fetch';
-
-        for my $cur_seq ( @sequences ) {
-
-            recon();
-
-            my @cur_msgs = $cur_seq->unfold;
-
-            #ddump( 'cur_msgs', \@cur_msgs ) if $opts->{debug};
-
-           #print "Iterating " . scalar @cur_msgs .  " messages,\t\t block number $iter of $num_blocks blocks.\t";
-
-            my $pre_fetch_time = time;
-
-            recon();
-            # The fetch_hash message take a ref to a list of
-            # message id's and a list of the headers we want
-            # to retrieve.  Initially, I'd written this
-            # portion of the script to utilize different
-            # specified headers, but now just passes the
-            # whole list of a headers to retrieve.  This
-            # means that the cache of messages will always
-            # contain the headers that we care about for all
-            # of our reports and it is not an expensive
-            # operation to fetch additional headers.
-            #
-            my $cur_fetcher = $imap->fetch_hash( \@cur_msgs, @headers );
-
-            my $post_fetch_time = time;
-
-            my $elapsed = $post_fetch_time - $pre_fetch_time;
-
-            # Push stats to this array so that eta can be
-            # computed on-the-fly.
-            #
-            push @$eta, [ $elapsed, $iter, $num_blocks ];
-
-           #print "Folder fetch time: $elapsed seconds\n";
-
-           # Stuck the estimator into it's own function so
-           # that I can complicate it later.
-           #
-           my $eta_time = estimate_completion_time( $eta, $num_blocks );
-
-           $msg_count -= scalar( @cur_msgs );
-
-           my $text = sprintf( "%8d remaining", $msg_count );
-
-           $prog_bar->text( $text );
-           my $info = "blocks";
-
-           # only tack on the ETA if there's still an eta to
-           # report.
-           #
-           $info .= $eta_time ? ' - ETA: ' . $eta_time : '';
-
-           $prog_bar->info( $info );
-           $prog_bar->update( $iter );
-           $prog_bar->write;
-
-
-           # Display a status report of the current
-           # iteration.  Will be replaced with a
-           # progressbar.
-           #
-           #show_current_fetch_stats(
-           #    scalar @cur_msgs,
-           #    $iter,
-           #    $num_blocks,
-           #    $elapsed,
-           #    estimate_completion_time( $eta, $num_blocks ),
-           #);
-
-            # Merge the current fetch block with our primary
-            # fetcher hashref.
-            #
-            @{ $fetcher }{ keys %$cur_fetcher } = values %$cur_fetcher;
-
-            #ddump( 'cur_fetcher', $cur_fetcher ) if $opts->{debug};
-
-            $iter++;
-
-            # my crappy break handling that isn't working
-            # correctly yet...
-            #
-            last if $break;
-
-        }
-
-        # Set the break function back to what it was.
-        #
-        $SIG{'INT'} = 'die_signal';
-
-    } else {
-        die_clean( 1, "Error checking current folder selection: $! " . $imap->LastError );
-    }
-
-    #ddump( 'fetcher', $fetcher ) if $opts->{debug};
-
-    my $max = ( scalar(keys %$fetcher) );
-    my $sbar = IMAP::Progress->new( max => $max, length => 10 );
-
-    print "\n\n";
-
-    $sbar->text('Processing headers:');
-
-    my $scounter = 0;
-
-    # Ugly.
-    #
-    # Iterate the whole list of fetched messages and fix
-    # each value returned.
-    #
-    for my $cur_id ( keys %$fetcher ) {
-
-        for my $cur_header (@headers) {
-
-            $fetcher->{$cur_id}->{$cur_header} =
-                stripper( $header_table{$cur_header},
-                          $fetcher->{$cur_id}->{$cur_header} );
-
-            $fetcher->{$cur_id}->{$cur_header} = '[EmptyValue]' unless $fetcher->{$cur_id}->{$cur_header};
-
-        }
-
-        $sbar->update( ++$scounter );
-        $sbar->write;
-
-    }
-
-    put_cache({ content_type => 'fetched_messages', folder => $folder, values => $fetcher });
-
-    return $fetcher;
-
-} # }}}
-
 # {{{ threaded_fetch_msgs
 #
 # Expects to receive a list of items representing the
@@ -2049,10 +1737,6 @@ sub threaded_fetch_msgs {
     my $folder = shift;
 
     verbose( "THREADED FOLDER: " . Dumper( $folder ) );
-
-    # Damn ye scalar leaks...
-    #
-    @_ = ();
 
     my @headers;
 
@@ -2075,13 +1759,10 @@ sub threaded_fetch_msgs {
 
     return $fetcher if $fetcher;
 
-    recon();
-
-    # Quick sanity check to see if the chosen folder really
-    # exists, not all that necessary because the folder list
-    # is well validated at the beginning of the script, but,
-    # just to be safe in case anything was modified during
-    # the runtime of this script...
+    # Quick sanity check to see if the chosen folder really exists, not all that
+    # necessary because the folder list is well validated at the beginning of
+    # the script, but, just to be safe in case anything was modified during the
+    # runtime of this script...
     #
     if ( ! $imap->exists($folder) ) {
         show_error( "Error: $folder not a valid folder: $@\nLastError: " . $imap->LastError );
@@ -2354,10 +2035,6 @@ sub imap_thread {
 
 
 
-    # Damn ye scalar leaks...
-    #
-    #@_ = ();
-
     # Each thread gets its own imap object...
     #
     my $imap_thread  = Mail::IMAPClient->new(
@@ -2396,7 +2073,7 @@ sub imap_thread {
     # This thread is done, tear down the imap
     # connection.
     #
-    #$imap_thread->disconnect;
+    $imap_thread->disconnect;
 
     {
         lock( $fetched_queue );
@@ -2420,504 +2097,6 @@ sub imap_thread {
 
 } # }}}
 
-# {{{ old_threaded_fetch_msgs
-#
-# Expects to receive a list of items representing the
-# message attributes we want to fetch.
-#
-# Returns a hashref of message id's as the keys, and the
-# values for each key are hashrefs of the message attributes
-# on which we want to report.
-#
-sub old_threaded_fetch_msgs {
-
-    my $folder = shift;
-
-    # Damn ye scalar leaks...
-    #
-    @_ = ();
-
-    my @headers;
-
-    # TODO
-    #
-    # Fix this header handling...
-    #
-    push @headers, $header_table{$_} for qw/Date Subject Size To From/;
-
-    #ddump( 'headers', \@headers ) if $opts->{debug};
-
-    # This will hold the entire result of fetching
-    # operations.
-    #
-    my $fetcher = {};
-
-    $fetcher = check_cache( 'fetched_messages', $folder );
-
-    return $fetcher if $fetcher;
-
-    recon();
-
-    # Quick sanity check to see if the chosen folder really
-    # exists, not all that necessary because the folder list
-    # is well validated at the beginning of the script, but,
-    # just to be safe in case anything was modified during
-    # the runtime of this script...
-    #
-    if ( ! $imap->exists($folder) ) {
-        show_error( "Error: $folder not a valid folder: $@\nLastError: " . $imap->LastError );
-        return ( 0, 0 );
-    }
-
-    $imap->examine($folder)
-        or show_error( "Error selecting $folder: $@\n" );
-
-
-    # One more quick sanity check to make sure we really are
-    # in a folder and that folder is in a select (examine)
-    # state.
-    #
-    if ( $imap->Folder() ) {
-
-        # This object will hold our message ids.
-        #
-        my $msgset = Mail::IMAPClient::MessageSet->new( $imap->messages );
-
-        my $msg_ids = [];
-
-        if ( $msgset ) {
-            $msg_ids = $msgset->unfold;
-        }
-
-        my $msg_count = scalar(@$msg_ids);
-
-        # Return empty handed if there are no messages in
-        # the folder.
-        #
-        return unless $msg_count;
-
-        # Take the list of message id's and break them up
-        # into smaller chunks in the form of an array of
-        # MessageSet objects.
-        #
-        my $threaded_sequences = threaded_sequence_chunker( $msg_ids );
-
-        #ddump( 'sequences', \@sequences ) if $opts->{debug};
-
-        my $num_blocks;
-
-       #for my $cur_bucket ( keys %$threaded_sequences ) {
-       #    for my $cur_msg_set_list ( @{$threaded_sequences->{$cur_bucket}} ) {
-       #        $num_blocks += scalar @$cur_msg_set_list;
-       #    }
-       #}
-
-        #my $prog_bar = IMAP::Progress->new( max => $num_blocks, length => 10 );
-
-        #$prog_bar->text( "$msg_count remaining" );
-        #$prog_bar->update( 0 );
-        #$prog_bar->write;
-
-        #my $iter = 1;
-
-        #my $eta = [];
-
-        # Trying to come up with a way of trapping a Ctrl-C
-        # to gracefully finish the current iteration and
-        # finish producing the report.  It doesn't work very
-        # well.
-        #
-        #$SIG{'INT'} = 'break_fetch';
-
-        my $imap_objs = {};
-
-        my $threads = [];
-
-        # Each thread will stuff stats in the global
-        # progress_queue object.  Spawn this thread which
-        # will keep watching the queue and computing stats.
-        #
-        {
-
-      #_#   my $progress_bar = IMAP::Progress->new( max => $msg_count, length => 10 );
-
-      #_#   my $progress_thread = threads->create( \&threaded_progress_bar, $progress_bar )->detach();
-
-            for my $cur_bucket ( sort keys %$threaded_sequences ) {
-
-                print "\nInitiating fetcher thread $cur_bucket...\n" if $opts->{verbose};
-
-                #$threads->[$cur_bucket] = threads->create(
-
-                {
-
-                    threads->create(
-
-                        sub {
-
-                            # Each thread gets an appropriate list
-                            # of M::I::MessageSet objects
-                            #
-                            my $msg_set_lists = shift;
-
-                            # Damn ye scalar leaks...
-                            #
-                            @_ = ();
-
-                            # All of the results from iterating the
-                            # MessageSet objects will be merged into
-                            # this hashref.
-                            #
-                            #my $this_fetcher = {};
-
-                            # Each thread gets its own imap
-                            # object...
-                            #
-                            my $imap_thread  = Mail::IMAPClient->new(
-                                        Server           => $opts->{server},
-                                        Port             => $opts->{port},
-                                        User             => $opts->{user},
-                                        Password         => $opts->{password},
-                                        Keepalive        => $opts->{Keepalive},
-                                        Fast_io          => $opts->{Fast_io},
-                                        Ssl              => $opts->{Ssl},
-                                        Maxcommandlength => $opts->{Maxcommandlength},
-                                        Reconnectretry   => $opts->{Reconnectretry},
-                                        Uid              => 0,
-                                        Clear            => 100,
-                                    #Debug          => $opts->{debug} . '.' . $cur_bucket,
-                                    #Debug_fh       => *DBG,
-
-                            ) or die "Cannot connect to host : $@";
-
-                            #show_error( "CUR BUCKET: " . Dumper( $cur_bucket ) );
-
-                            # Reselect the folder so this thread is
-                            # in the right place.  No validation
-                            # check necessary at this stage.
-                            #
-                            if ( ! $imap_thread->examine($folder) ) {
-                                warn "Error selecting folder $folder in thread $cur_bucket: $@\n";
-                                last;
-                            }
-
-                            # Now start iterating the list of
-                            # MessageSet objects.
-                            #
-                            for my $cur_msg_set_list (@$msg_set_lists) {
-
-                                unless ( $imap_thread->reconnect ) {
-                                    warn 'IMAP reconnect error: ' . $imap_thread->LastError . "\n";
-                                    last;
-                                }
-
-                                #show_error( "CUR msg_set_list for cur_bucket $cur_bucket: " . Dumper( $cur_msg_set_list ) );
-
-                                my $pre_fetch_time = time;
-
-                                # Turn the object back into a list.
-                                #
-                                my @cur_msg_id_list = $cur_msg_set_list->unfold;
-
-                                # Count msgs for our stats to use.
-                                #
-                                my $cur_msg_count   = scalar(@cur_msg_id_list);
-
-                                # Here's the heavy lifting...
-                                #
-                                my $cur_fetcher = $imap_thread->fetch_hash( \@cur_msg_id_list, @headers );
-
-                                my $post_fetch_time = time;
-
-                                my $elapsed = $post_fetch_time - $pre_fetch_time;
-
-                                # Stick our progress stats in the
-                                # queue.
-                                #
-                        #_#     {
-                        #_#         lock($progress_queue);
-                        #_#         $progress_queue->enqueue( [ $elapsed, $cur_msg_count, $msg_count ] );
-                        #_#     }
-
-                                #show_error( "CUR FETCHER for cur_bucket $cur_bucket: " . Dumper( $cur_fetcher ) );
-
-                                # Merge results with main hashref
-                                #
-                                #@{$this_fetcher}{ keys %$cur_fetcher } = values %$cur_fetcher;
-
-                                # Instead of having the thread
-                                # return results, we're just going
-                                # to keep piling our results into
-                                # the (hopefully) thread-safe
-                                # fetched_queue as we go.  This
-                                # should take care of any scope
-                                # issues with references.
-                                #
-                                {
-
-                                    lock($fetched_queue);
-
-                                    for my $m_id ( keys %$cur_fetcher ) {
-                                        next unless $m_id;
-                                        $fetched_queue->enqueue( $m_id => $cur_fetcher->{$m_id} );
-                                    }
-
-                                }
-
-                            }
-
-                            # This thread is done, tear down the
-                            # imap connection.
-                            #
-                            $imap_thread->disconnect;
-
-                            # Stick a message on the status queue
-                            # that we're done.
-                            #
-                            {
-                                lock($fetcher_status);
-                                $fetcher_status->enqueue( 'complete' );
-                            }
-
-                            #return $this_fetcher;
-
-                        },
-                        # Here's the parameter that is passed to
-                        # the above coderef.
-                        #
-                        $threaded_sequences->{$cur_bucket}
-
-                    # Detaching thread because we will read our
-                    # results from the fetched messages queue so
-                    # we don't need to have the thread return
-                    # anything.
-                    #
-                    )->detach();
-
-                }
-
-            }
-
-
-            # Before proceding, wait for each thread to finish
-            # collecting messages by checking the fetcher status
-            # queue.
-            #
-            {
-                while ( 1 ) {
-
-                    print "\nWaiting for threads to complete...\n" if $opts->{verbose};
-
-                    sleep 1;
-
-                    my $statuses = $fetcher_status->pending();
-
-                    #$Data::Dumper::Varname = 'statuses';
-
-                    #print "\n\n" . Dumper( $statuses ) . "\n\n";
-
-                    last if $statuses == $opts->{threads};
-
-                }
-            }
-
-            print "\nThreads complete...\n" if $opts->{verbose};
-
-        #for my $cur_bucket ( sort keys %$threaded_sequences ) {
-        #    #my $thread_fetcher = $threads->[$cur_bucket]->join;
-        #    #@{ $fetcher }{ keys %$thread_fetcher } = values %$thread_fetcher;
-        #}
-
-
-            # Our worker threads are finished, so send a message
-            # to the stats thread that it can go away now.
-            #
-#_#         {
-
-#_#             print "\n\n\nTelling the progress_bar thread we're done...\n\n\n" if $opts->{verbose};
-
-#_#             lock($progress_queue);
-#_#             $progress_queue->enqueue( 'quit' );
-
-#_#         }
-
-            # Wait for the progress bar thread to die.
-            #
-#_#         while ( 1 ) {
-
-#_#             print "Waiting for the progress_bar thread to acknowledge we're done...\n" if $opts->{verbose};
-
-#_#             sleep 1;
-
-#_#             my $item;
-
-#_#             {
-#_#                 lock($progress_queue);
-#_#                 $item = $progress_queue->extract();
-
-#_#             }
-
-                #$Data::Dumper::Varname = 'item_';
-                #print "\n\n" . Dumper( $item ) . "\n\n";
-                #print "\n\n" . Dumper( ref $item ) . "\n\n";
-
-#_#             next unless $item;
-
-#_#             if ( $item eq 'ended' ) {
-
-#_#                 print "\nReceived ack that progress bar thread ended...\n" if $opts->{verbose};
-
-                    #wait;
-                    #threads->exit(0);
-
-#_#                 print "\n" x 10;
-#_#                 last;
-
-#_#             } else {
-
-#_#                 print "Still waiting for response from progress bar thread...\n" if $opts->{verbose};
-
-#_#             }
-
-#_#         }
-
-        }
-
-#_#     print "Progress bar thread ended...\n" if $opts->{verbose};
-
-
-        # Now we that the threads have completed, iterate
-        # the values in our fetched messages queue and merge
-        # them into the big fetcher hashref.
-        #
-        {
-
-            print "Parsing fetched messages...\n";
-
-            lock($fetched_queue);
-
-           #$Data::Dumper::Varname = 'from_q_';
-
-            my $pending = $fetched_queue->pending();
-
-            print "Total messages pending for processing: $pending\n";
-
-           #my $bar = IMAP::Progress->new( max => $pending, length => 10 );
-
-           #$bar->text('Parsing fetched messages:');
-
-           #my $parse_counter = 0;
-
-           #print "\n";
-
-            my %from_fetched_queue = $fetched_queue->extract( 0, $pending );
-
-           # while ( $fetched_queue->pending() ) {
-
-           #     my @from_q = $fetched_queue->extract(0, $pending );
-
-           #     for my $fq ( @from_q ) {
-           #         #ddump( 'ref from_q', ref $from_q );
-           #         #ddump( 'from_q', @from_q );
-
-           #         #ddump( 'ref from_q', ref $from_q[$parse_counter]);
-           #         #ddump( 'from_q', $from_q[$parse_counter]);
-
-           #         #ddump( 'ref fq', ref $fq );
-           #         #ddump( 'fq', $fq );
-
-           #         @{$fetcher}{ keys %$fq } = values %$fq;
-
-           #     }
-
-           #    @{$fetcher}{ keys %$from_q } = values %$from_q;
-
-                # Keep the counter from updating too
-                # frequently...
-                #
-           #    if ( ( ( $parse_counter % 20 ) + 1 )  == 20 ) {
-           #        $bar->update( $parse_counter );
-           #        $bar->write;
-           #    }
-
-           #    $parse_counter++;
-
-            #}
-
-            @{$fetcher}{ keys %from_fetched_queue } = values %from_fetched_queue;
-
-            print "\nParse complete...\n";
-
-
-            #$Data::Dumper::Varname = 'fetcher_';
-            #print "\n" . Dumper( $fetcher ) . "\n\n";
-
-        }
-
-        # Set the break function back to what it was.
-        #
-        #$SIG{'INT'} = 'die_signal';
-
-    } else {
-        die_clean( 1, "Error checking current folder selection: $! " . $imap->LastError );
-    }
-
-    #ddump( 'fetcher', $fetcher ) if $opts->{debug};
-
-    #show_error( "FETCHER_FINAL: " . Dumper( $fetcher ) );
-
-    my $max = ( scalar(keys %$fetcher) * scalar(@headers) );
-
-    my $sbar = IMAP::Progress->new( max => $max, length => 10 );
-
-    print "\n\n";
-
-    $sbar->text('Processing headers:');
-
-    my $scounter = 0;
-
-    # Ugly.
-    #
-    # Iterate the whole list of fetched messages and fix
-    # each value returned.  The header information has some
-    # issues like CRLF and such.
-    #
-    print "Fixing message headers...\n";
-    for my $cur_id ( keys %$fetcher ) {
-
-        for my $cur_header (@headers) {
-
-            $fetcher->{$cur_id}->{$cur_header} =
-                stripper( $header_table{$cur_header},
-                          $fetcher->{$cur_id}->{$cur_header} );
-
-
-            $fetcher->{$cur_id}->{$cur_header} = '[EmptyValue]' unless $fetcher->{$cur_id}->{$cur_header};
-
-        }
-
-        # Keep the counter from updating too frequently...
-        #
-        if ( ( ( $scounter % 20 ) + 1 )  == 20 ) {
-            $sbar->update( $scounter++ );
-            $sbar->write;
-        }
-
-    }
-
-    #show_error( "FETCHER: " . Dumper( $fetcher ) );
-    #show_error( "FETCHER REF: " . Dumper( ref $fetcher ) );
-
-    # Store our results in the cache then return the
-    # results.
-    #
-    print "Storing messages in cache...\n";
-    put_cache({ content_type => 'fetched_messages', folder => $folder, values => $fetcher });
-
-    return $fetcher;
-
-} # }}}
-
 # {{{ get_folder_size
 #
 # TODO
@@ -2928,17 +2107,8 @@ sub get_folder_size {
 
     my $folder = shift;
 
-    # Damn ye scalar leaks...
-    #
-    @_ = ();
-
-    recon();
-
     print "\n\nFetching message details for folder '$folder'...\n\n";
 
-    recon();
-    #my $msgs = fetch_msgs( $folder );
-    #my $msgs = threaded_fetch_msgs( $folder );
     my $msgs =
         $use_threaded_mode
         ? threaded_fetch_msgs( $folder )
@@ -2976,10 +2146,6 @@ sub get_folder_size {
 sub init_cache {
 
     my $cfile = shift;
-
-    # Damn ye scalar leaks...
-    #
-    @_ = ();
 
     my $c;
 
@@ -3028,10 +2194,6 @@ sub check_cache {
 
     my $content_type = shift;
     my $value = shift;
-
-    # Damn ye scalar leaks...
-    #
-    @_ = ();
 
     my $cur_time = time;
 
@@ -3152,10 +2314,6 @@ sub put_cache {
 
     my $args = shift;
 
-    # Damn ye scalar leaks...
-    #
-    @_ = ();
-
     my $content_type = $args->{content_type};
     my $values       = $args->{values};
     my $folder       = $args->{folder};
@@ -3207,10 +2365,6 @@ sub put_cache {
 sub threaded_progress_bar {
 
     my $pbar = shift;
-
-    # Damn ye scalar leaks...
-    #
-    @_ = ();
 
     my $stats = [];
 
@@ -3338,10 +2492,6 @@ sub estimate_completion_time {
     my $stats                  = shift;
     my $total_number_of_blocks = shift;
 
-    # Damn ye scalar leaks...
-    #
-    @_ = ();
-
     my $number_of_blocks_completed = scalar(@$stats);
 
     my $elapsed_seconds_completed = 0;
@@ -3355,21 +2505,6 @@ sub estimate_completion_time {
     my $remaining_eta = $total_eta - $elapsed_seconds_completed;
 
     return convert_seconds($remaining_eta);
-
-} # }}}
-
-# {{{ recon
-#
-
-sub recon {
-
-    return;
-
-    # Separated this into a separate small function trying
-    # to make my code look a little less cluttered...  :(
-    #
-    $imap->reconnect
-        or die_clean( 1, 'IMAP reconnect error: ' . $imap->LastError );
 
 } # }}}
 
@@ -3391,10 +2526,6 @@ sub sequence_chunker {
 
     my $all_msg_ids = shift;
     my $max         = shift;
-
-    # Damn ye scalar leaks...
-    #
-    @_ = ();
 
     show_error( 'Error processing sequences' ) unless $all_msg_ids;
 
@@ -3442,10 +2573,6 @@ sub threaded_sequence_chunker {
 
     my $max = int( $message_count / $opts->{threads} );
 
-    # Damn ye scalar leaks...
-    #
-    @_ = ();
-
     my @cur_block;
 
     my $msg_id_buckets  = {};
@@ -3486,10 +2613,6 @@ sub stripper {
 
     my $name  = shift;
     my $field = shift;
-
-    # Damn ye scalar leaks...
-    #
-    @_ = ();
 
     return unless $name;
     return unless $field;
@@ -3577,8 +2700,6 @@ sub break_fetch {
     print "Will break after the current fetch...\n";
     $break = 1;
 
-    recon();
-
     return;
 
 } # }}}
@@ -3592,10 +2713,6 @@ sub break_fetch {
 sub generate_subject_search_string {
 
     my ( $folder, $date, $subject ) = @_;
-
-    # Damn ye scalar leaks...
-    #
-    @_ = ();
 
 
     my %folders = (
@@ -3656,10 +2773,6 @@ sub generate_subject_search_string {
 sub generate_search_string {
 
     my $args = shift;
-
-    # Damn ye scalar leaks...
-    #
-    @_ = ();
 
 
     my $folder = $args->{folder};
@@ -3726,10 +2839,6 @@ sub generate_search_string {
 #
 sub read_config_file {
 
-    # Damn ye scalar leaks...
-    #
-    @_ = ();
-
     my $cf = $opts->{conf};
 
     if ( $cf && ! -f $cf ) {
@@ -3783,10 +2892,6 @@ sub convert_bytes {
 
     my $bytes = shift;
 
-    # Damn ye scalar leaks...
-    #
-    @_ = ();
-
     my $KB = $bytes / 1024;
 
     return sprintf( '%.1fKB', $KB )               if $KB < 1000;
@@ -3802,10 +2907,6 @@ sub convert_bytes {
 sub convert_seconds {
 
     my $seconds = shift;
-
-    # Damn ye scalar leaks...
-    #
-    @_ = ();
 
     my $days  = int( $seconds / ( 24 * 60 * 60 ) );
     my $hours = ( $seconds / ( 60 * 60 ) ) % 24;
@@ -3829,10 +2930,6 @@ sub die_signal {
 
     my @args = @_;
 
-    # Damn ye scalar leaks...
-    #
-    @_ = ();
-
     if ( scalar @args > 0 ) {
 
         my $signal = shift(@args);
@@ -3852,13 +2949,9 @@ sub die_clean {
     my $err = shift;
     my $msg = shift;
 
-    # Damn ye scalar leaks...
-    #
-    @_ = ();
-
-   #if ( defined $imap && ref $imap && $imap->IsConnected ) {
-   #    $imap->disconnect;
-   #}
+    #if ( defined $imap && ref $imap && $imap->IsConnected ) {
+        #$imap->disconnect;
+    #}
 
     close DBG;
 
@@ -3966,10 +3059,6 @@ sub user_prompt {
 sub print_report {
 
     my $report = shift;
-
-    # Damn ye scalar leaks...
-    #
-    @_ = ();
 
     my $file = "$ENV{HOME}/imap-report.txt";
     open ( RPT, ">" . $file )
