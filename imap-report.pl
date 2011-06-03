@@ -232,6 +232,8 @@ use Term::Menus;
 
 our $VERSION = sprintf "%d.%d", q$Revision: 1.1 $ =~ /(\d+)/g;
 
+$|=1;
+
 # Handle signals gracefully
 #
 $SIG{'INT'}  = 'die_signal';
@@ -324,8 +326,7 @@ read_config_file();
 die "--server option required.\n" unless $opts->{server};
 die "--port option required.\n"   unless $opts->{port};
 
-# Default to unthreaded. Only turn on threading if our
-# conditions are met...
+# Default to unthreaded. Only turn on threading if our conditions are met...
 #
 my $use_threaded_mode = 0;
 
@@ -451,10 +452,9 @@ my $reports = report_types();
 
 my $cache = init_cache( $opts->{cache_file} );
 
-# We're connected to the imap server.  Fetch the list of
-# folders now, rather than repeatedly running imap commands
-# to gather the list of folders each time the menu is
-# displayed.
+# We're connected to the imap server.  Fetch the list of folders now, rather
+# than repeatedly running imap commands to gather the list of folders each time
+# the menu is displayed.
 #
 my $imap_folders = fetch_folders({ filters => $opts->{filters}, excludes => $opts->{exclude} });
 
@@ -535,6 +535,11 @@ while (1) {
     next unless scalar(@report);
 
     print_report(\@report);
+
+    # If we manually specified the report type, don't bother going back to the
+    # menu.
+    #
+    die_clean( 0, "Quitting..." )  if $opts->{report};
 
 }
 
@@ -1118,9 +1123,6 @@ sub messages_by_to_address_report {
 
     my $stime = time;
 
-    #my $msgs = fetch_msgs( $folder );
-    #my $msgs = threaded_fetch_msgs( $folder );
-
     my $msgs =
         $use_threaded_mode
         ? threaded_fetch_msgs( $folder )
@@ -1643,7 +1645,7 @@ sub fetch_msgs {
         # the current iteration and finish producing the report.  It doesn't
         # work very well.
         #
-        $SIG{'INT'} = 'break_fetch';
+        #$SIG{'INT'} = 'break_fetch';
 
         print "Fetching $msg_count messages...\n";
 
@@ -1651,7 +1653,7 @@ sub fetch_msgs {
 
         # Set the break function back to what it was.
         #
-        $SIG{'INT'} = 'die_signal';
+        #$SIG{'INT'} = 'die_signal';
 
     } else {
         die_clean( 1, "Error checking current folder selection: $! " . $imap->LastError );
@@ -1831,6 +1833,10 @@ sub threaded_fetch_msgs {
 
                     );
 
+                    print "Detaching thread: $cur_bucket\n" if $opts->{verbose};
+
+                    $threads->[$cur_bucket]->detach();
+
                 }
 
             }
@@ -1841,9 +1847,8 @@ sub threaded_fetch_msgs {
             # Before proceding, wait for each thread to finish collecting
             # messages by checking the fetcher status queue.
             #
+            print "\nWaiting for threads to complete...\n";
             while ( 1 ) {
-
-                print "\nWaiting for threads to complete...\n" if $opts->{verbose};
 
                 print '.';
 
@@ -1862,13 +1867,13 @@ sub threaded_fetch_msgs {
 
             # Rejoin the threads for a clean exit.
             #
-            for my $cur_bucket ( sort keys %$threaded_sequences ) {
-                $threads->[$cur_bucket]->join();
-            }
-
-            print "\n\nThreads complete...\n\n" if $opts->{verbose};
+           #for my $cur_bucket ( sort keys %$threaded_sequences ) {
+           #    $threads->[$cur_bucket]->join();
+           #}
 
         }
+
+        print "\n\nThreads complete...\n\n";
 
 #_#     print "Progress bar thread ended...\n" if $opts->{verbose};
 
@@ -2019,7 +2024,7 @@ sub imap_thread {
 
     # This thread is done, tear down the imap connection.
     #
-    $imap_thread->disconnect;
+    #$imap_thread->disconnect;
 
     {
         lock( $fetched_queue );
@@ -2092,6 +2097,50 @@ sub init_cache {
 
     my $cfile = shift;
 
+    return unless $opts->{cache};
+
+    unless ( eval 'require DBM::Deep; import DBM::Deep; 1;' ) {
+        return;
+    }
+
+    return;
+
+    my $c;
+
+    # If 'cache' file exists, load it, otherwise, instantiate a cache hashref.
+    #
+    if ( -r $cfile ) {
+        print "Loading cache...\n";
+        $c = retrieve($cfile);
+    } else {
+
+        # Not particularly necessary, mainly for documentation purposes.
+        #
+        # All cache elements are stored as hashrefs because it's a lazy way of
+        # ensuring that I'm not stuffing duplicates into the cache.
+        #
+        $c->{ $opts->{server} }->{imap_folders}->{fetched_messages} = {};
+        $c->{ $opts->{server} }->{imap_folders}->{folders}          = {};
+        $c->{ $opts->{server} }->{imap_folders}                     = {};
+        $c->{ $opts->{server} }->{imap_folders}->{validated}        = {};
+
+    }
+
+    $c->{updated} = 0;
+
+    return $c;
+
+
+} # }}}
+
+# {{{  init_cache_storable
+#
+# Crude implementation of a cache using Storable.
+#
+sub init_cache_storable {
+
+    my $cfile = shift;
+
     my $c;
 
     # If 'cache' file exists, load it, otherwise, instantiate a cache hashref.
@@ -2135,11 +2184,12 @@ sub init_cache {
 sub check_cache {
 
     my $content_type = shift;
-    my $value = shift;
+    my $value        = shift;
+
+    return unless $opts->{cache};
 
     my $cur_time = time;
 
-    return unless $opts->{cache};
 
     if ( $content_type eq 'folder_list' ) {
 
@@ -2215,10 +2265,9 @@ sub check_cache {
 
     } elsif ( $content_type eq 'message_count' ) {
 
-        # This looks into the cache of messages and if
-        # messages have been cached, returns the count of
-        # the number of messages stored there.  Folder
-        # message counts themselves are not actually cached.
+        # This looks into the cache of messages and if messages have been
+        # cached, returns the count of the number of messages stored there.
+        # Folder message counts themselves are not actually cached.
         #
 
         return unless defined $value && $value;
@@ -2234,7 +2283,6 @@ sub check_cache {
 
     }
 
-
     return;
 
 } # }}}
@@ -2248,6 +2296,8 @@ sub check_cache {
 sub put_cache {
 
     my $args = shift;
+
+    return unless $opts->{cache};
 
     my $content_type = $args->{content_type};
     my $values       = $args->{values};
@@ -2288,6 +2338,12 @@ sub put_cache {
 
     }
 
+    if ( $cache->{updated} ) {
+        print "\nWriting cache...\n";
+        store( $cache, $opts->{cache_file} );
+        my $cache_size = ( stat( $opts->{cache_file} ) )[7];
+        print 'Cache size: ' . convert_bytes($cache_size) . "\n";
+    }
 
     return;
 
@@ -2845,14 +2901,13 @@ sub die_clean {
 
     print "\n$msg\n";
 
-    if ( $cache->{updated} && $err == 0 ) {
-        print "\nWriting cache...\n";
-        store( $cache, $opts->{cache_file} );
-        my $cache_size = ( stat( $opts->{cache_file} ) )[7];
-        print 'Cache size: ' . convert_bytes($cache_size) . "\n";
+    if ( $err ) {
+        print "Exiting with status: $err\n";
+        exit $err;
+    } else {
+        print "Exiting with clean status...\n";
+        exit;
     }
-
-    exit $err;
 
 } # }}}
 
@@ -2920,6 +2975,7 @@ sub print_report {
     close RPT;
 
     system( "less -niSRX $file" );
+    #system( "cat $file" );
 
     die_clean( 0, "Quitting" )
         if $opts->{list};
