@@ -260,7 +260,6 @@ $opts->{Keepalive}         = 1;
 $opts->{Fast_io}           = 1;
 $opts->{Reconnectretry}    = 3;
 $opts->{Ssl}               = 1;
-$opts->{cache}             = 1;
 $opts->{cache_file}        = "$ENV{HOME}/.imap-report.cache";
 $opts->{cache_age}         = 24 * 60 * 60;
 $opts->{conf}              = "$ENV{HOME}/.imapreportrc";
@@ -292,7 +291,6 @@ GetOptions(
         'Maxcommandlength=i',
         'Reconnectretry=i',
         'Ssl!',
-        'cache!',
         'cache_file=s',
         'cache_age=i',
         'threads=i',
@@ -322,8 +320,9 @@ if ( $opts->{Ssl} ) {
 
 read_config_file();
 
-die "--server option required.\n" unless $opts->{server};
-die "--port option required.\n"   unless $opts->{port};
+die "--cache_file option required.\n" unless $opts->{cache_file};
+die "--server option required.\n"     unless $opts->{server};
+die "--port option required.\n"       unless $opts->{port};
 
 # Default to unthreaded. Only turn on threading if our conditions are met...
 #
@@ -373,7 +372,6 @@ verbose( qq[
           threads: $opts->{threads}
 use_threaded_mode: $opts->{use_threaded_mode}
 
-            cache: $opts->{cache}
        cache_file: $opts->{cache_file}
         cache_age: $opts->{cache_age}
 
@@ -2070,9 +2068,8 @@ sub init_cache {
 
     my $cfile = shift;
 
-    return unless $opts->{cache};
-
     unless ( eval 'require DBI; import DBI; require DBD::SQLite; import DBD::SQLite; 1;' ) {
+        die_clean( 1, "DBI and DBD::SQLite perl modules required." );
         return;
     }
 
@@ -2147,6 +2144,131 @@ sub init_cache {
 
 } # }}}
 
+# {{{ cache_report
+#
+sub cache_report {
+
+    my $dbh          = shift;
+    my $report_type  = shift;
+    my $folder       = shift;
+
+    my $cur_time = time;
+
+    if ( $report_type eq 'folder_list' ) {
+
+        # {{{ folder_list cache check
+
+        # Checks the cached list of folders and returns an arrayref list of
+        # them.
+
+
+        my $sql = q[
+
+            SELECT
+                folder
+            FROM
+                folders
+            WHERE
+                server = ?
+
+        ];
+
+        my $folderlist = [];
+
+        push @$folderlist, $_->{folder}
+            for @{ $dbh->selectall_arrayref( $sql, { Slice => {} },
+                                             $opts->{server} ) };
+
+        if ( scalar(@$folderlist) ) {
+            return $folderlist;
+        } else {
+            return;
+        }
+
+        # }}}
+
+    } elsif ( $report_type eq 'validated_folder_list' ) {
+
+        # {{{ validated folder cache check
+
+        # The list of VALIDATED folders is cached separately.  This just returns
+        # a true/false if a folder appears in the list of validated folders.
+        # (Validated folders have passed a test using the 'exists' method.)
+        #
+
+        my $sql = q[
+            SELECT
+                folder
+            FROM
+                FOLDERS
+            WHERE
+                server = ?
+                AND validated = 1
+
+        ];
+
+        my $results = [];
+
+        push @$results, $_->{folder}
+            for @{ $dbh->selectall_arrayref( $sql, { Slice => {} },
+                                             $opts->{server} ) };
+
+        return $results->[0];
+
+        # }}}
+
+    } elsif ( $report_type eq 'fetched_messages' ) {
+
+        # {{{ fetched messages cache check
+
+        my $sql = q[
+            SELECT
+                msg_id,
+                to_address,
+                from_address,
+                subject,
+                date,
+                size
+            FROM
+                messages
+            WHERE
+                folder = ?
+        ];
+
+        my $msgs = {};
+
+       #for ( @{ $dbh->selectall_arrayref( $sql, { Slice => {} }, $value ) } ) {
+
+       #    $msgs->{$_->{msg_id}}->{$header_table{'From'}}    = $_->{from_address};
+       #    $msgs->{$_->{msg_id}}->{$header_table{'Date'}}    = $_->{date};
+       #    $msgs->{$_->{msg_id}}->{$header_table{'Subject'}} = $_->{subject};
+       #    $msgs->{$_->{msg_id}}->{$header_table{'To'}}      = $_->{to_address};
+       #    $msgs->{$_->{msg_id}}->{$header_table{'Size'}}    = $_->{size};
+
+       #}
+
+        return $msgs;
+
+        # }}}
+
+    } elsif ( $report_type eq 'message_count' ) {
+
+        # {{{ cached message count check
+
+        # This looks into the cache of messages and if messages have been
+        # cached, returns the count of the number of messages stored there.
+        # Folder message counts themselves are not actually cached.
+        #
+
+
+        # }}}
+
+    }
+
+    return;
+
+} # }}}
+
 # {{{ check_cache
 #
 # My crude method of a caching mechanism.
@@ -2164,8 +2286,6 @@ sub check_cache {
     my $dbh          = shift;
     my $content_type = shift;
     my $value        = shift;
-
-    return unless $opts->{cache};
 
     my $cur_time = time;
 
@@ -2317,8 +2437,6 @@ sub check_cache {
 sub put_cache {
 
     my $args = shift;
-
-    return unless $opts->{cache};
 
     my $dbh          = $args->{cache};
     my $content_type = $args->{content_type};
