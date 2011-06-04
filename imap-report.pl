@@ -224,7 +224,6 @@ package main;
 
 use Data::Dumper;
 use Getopt::Long qw/:config auto_help auto_version/;
-use Storable qw/store retrieve/;
 
 use Mail::IMAPClient;
 use Term::ReadKey qw/GetTerminalSize/;
@@ -807,34 +806,6 @@ sub messages_by_subject_report {
     my $subject_stats     = {};
     my $massaged_subjects = {};
 
-
-    # This produces two separate reports.  One with raw
-    # untouched subjects.  Another that strips off all the
-    # Re: (and Re: Re: RE: Re: junk).
-    #
-    for ( keys %$msgs ) {
-
-        my $subj = $msgs->{$_}->{$header_table{'Subject'}};
-
-        if ( defined $subject_stats->{$subj} ) {
-            $subject_stats->{$subj}++;
-        } else {
-            $subject_stats->{$subj} = 1;
-        }
-
-        $subj =~ s/^Re:\s+//gi;
-        $subj =~ s/^Fwd:\s+//gi;
-        $subj =~ s/\s+Re:\s+//gi;
-        $subj =~ s/\s+Fwd:\s+//gi;
-
-        if ( defined $massaged_subjects->{$subj} ) {
-            $massaged_subjects->{$subj}++;
-        } else {
-            $massaged_subjects->{$subj} = 1;
-        }
-
-
-    }
 
     push @cur_report, "\n\nTotal messages processed: " . scalar(keys %$msgs) . "\n\n";
     push @cur_report, 'Top ' . $opts->{top} . " subjects: \n\n\n";
@@ -2093,7 +2064,7 @@ sub get_folder_size {
 
 # {{{  init_cache
 #
-# Crude implementation of a cache using Storable.
+# Crude implementation of a cache using SQLite
 #
 sub init_cache {
 
@@ -2173,42 +2144,6 @@ sub init_cache {
     $dbh->{AutoCommit} = 1;
 
     return $dbh;
-
-} # }}}
-
-# {{{  init_cache_storable
-#
-# Crude implementation of a cache using Storable.
-#
-sub init_cache_storable {
-
-    my $cfile = shift;
-
-    my $c;
-
-    # If 'cache' file exists, load it, otherwise, instantiate a cache hashref.
-    #
-    if ( -r $cfile ) {
-        print "Loading cache...\n";
-        $c = retrieve($cfile);
-    } else {
-
-        # Not particularly necessary, mainly for documentation purposes.
-        #
-        # All cache elements are stored as hashrefs because it's a lazy way of
-        # ensuring that I'm not stuffing duplicates into the cache.
-        #
-        $c->{ $opts->{server} }->{imap_folders}->{fetched_messages} = {};
-        $c->{ $opts->{server} }->{imap_folders}->{folders}          = {};
-        $c->{ $opts->{server} }->{imap_folders}                     = {};
-        $c->{ $opts->{server} }->{imap_folders}->{validated}        = {};
-
-    }
-
-    $c->{updated} = 0;
-
-    return $c;
-
 
 } # }}}
 
@@ -2366,122 +2301,6 @@ sub check_cache {
         }
 
         # }}}
-
-    }
-
-    return;
-
-} # }}}
-
-# {{{ check_cache_storable
-#
-# My crude method of a caching mechanism.
-#
-# Feed this function the type of content and value for which to look.  Returns
-# cached elements based on the different types of information, arrayrefs,
-# hashrefs, bools, etc.
-#
-# TODO
-#
-# Implement cache aging
-#
-sub check_cache_storable {
-
-    my $content_type = shift;
-    my $value        = shift;
-
-    return unless $opts->{cache};
-
-    my $cur_time = time;
-
-
-    if ( $content_type eq 'folder_list' ) {
-
-        # Checks the cached list of folders and returns an arrayref list of
-        # them.
-
-        if ( defined $cache->{$opts->{server}}->{imap_folders}->{folders} ) {
-
-            # First attempt at cache aging.  Screwed something else up which
-            # broke this.  Need to revisit and fix...
-
-           #my $last_update =
-           #    defined $cache->{imap_folders}->{age} && $cache->{imap_folders}->{age}
-           #    ? $cache->{imap_folders}->{age}
-           #    : 0
-           #    ;
-
-           #my $age =
-           #    defined $last_update && $last_update
-           #    ? $cur_time - $last_update
-           #    : 0
-           #    ;
-
-           ## Return emptyhanded if age has no value or if
-           ## it has a value and it is greater than the
-           ## maximum cache age.
-           ##
-
-           #if ( defined $age && $age && $age > 0 && $age > $opts->{cache_age} ) {
-           #    return;
-           #}
-
-            show_error('Fetched folder list from cache.')
-                if $opts->{verbose};
-
-            #ddump( 'Folders from cache', $cache->{$opts->{server}}->{imap_folders}->{folders} )
-                #if $opts->{debug};
-
-            my @f = sort keys %{ $cache->{$opts->{server}}->{imap_folders}->{folders} };
-            return \@f;
-
-        }
-
-    } elsif ( $content_type eq 'validated_folder_list' ) {
-
-        # The list of VALIDATED folders is cached separately.  This just returns
-        # a true/false if a folder appears in the list of validated folders.
-        # (Validated folders have passed a test using the 'exists' method.)
-        #
-        return unless defined $value && $value;
-
-        if ( defined $cache->{ $opts->{server} }->{imap_folders}->{validated}
-             && ref $cache->{ $opts->{server} }->{imap_folders}->{validated} eq 'HASH' ) {
-
-            my $result = grep $value eq $_, keys %{ $cache->{ $opts->{server} }->{imap_folders}->{validated} };
-
-            return $result;
-
-        }
-
-    } elsif ( $content_type eq 'fetched_messages' ) {
-
-        return unless defined $value && $value;
-
-        if ( defined $cache->{ $opts->{server} }->{imap_folders}->{fetched_messages}->{$value}->{messages}
-             && ref $cache->{ $opts->{server} }->{imap_folders}->{fetched_messages}->{$value}->{messages} eq 'HASH' ) {
-
-            return $cache->{ $opts->{server} }->{imap_folders}->{fetched_messages}->{$value}->{messages};
-
-        }
-
-    } elsif ( $content_type eq 'message_count' ) {
-
-        # This looks into the cache of messages and if messages have been
-        # cached, returns the count of the number of messages stored there.
-        # Folder message counts themselves are not actually cached.
-        #
-
-        return unless defined $value && $value;
-
-        if ( defined $cache->{ $opts->{server} }->{imap_folders}->{fetched_messages}->{$value}->{messages}
-             && ref $cache->{ $opts->{server} }->{imap_folders}->{fetched_messages}->{$value}->{messages} eq 'HASH' ) {
-
-            my $result = scalar( keys %{ $cache->{ $opts->{server} }->{imap_folders}->{fetched_messages}->{$value}->{messages} } );
-
-            return $result;
-
-        }
 
     }
 
@@ -2669,68 +2488,6 @@ sub put_cache {
 
         # }}}
 
-    }
-
-    return;
-
-} # }}}
-
-# {{{ put_cache_storable
-#
-# Handle inserting the various types of information we want to cache.
-#
-# Sticks in the current time value so for cache aging purposes later.
-#
-sub put_cache_storable {
-
-    my $args = shift;
-
-    return unless $opts->{cache};
-
-    my $content_type = $args->{content_type};
-    my $values       = $args->{values};
-    my $folder       = $args->{folder};
-
-    return unless $content_type;
-
-    if ( $content_type eq 'folder_list' ) {
-
-        if ( ref $values eq 'ARRAY' ) {
-            %{$cache->{$opts->{server}}->{imap_folders}->{folders}} = map { $_ => 1 } @$values;
-            $cache->{$opts->{server}}->{imap_folders}->{age} = time;
-            $cache->{updated} = 1;
-        } else {
-            return;
-        }
-
-    } elsif ( $content_type eq 'validated_folder_list' ) {
-
-        return unless $folder;
-        return if ref $folder;
-
-        # Not sticking the age here yet because I'm not
-        # quite yet sure how I'm going to handle the aging
-        # of the cache of validated folder list.
-        #
-        $cache->{$opts->{server}}->{imap_folders}->{validated}->{$folder} = 1;
-        $cache->{updated} = 1;
-
-    } elsif ( $content_type eq 'fetched_messages' ) {
-
-        return unless ref $values eq 'HASH';
-        return unless $folder;
-
-        $cache->{$opts->{server}}->{imap_folders}->{fetched_messages}->{$folder}->{messages} = $values;
-        $cache->{$opts->{server}}->{imap_folders}->{fetched_messages}->{$folder}->{age}      = time;
-        $cache->{updated} = 1;
-
-    }
-
-    if ( $cache->{updated} ) {
-        print "\nWriting cache...\n" if $opts->{verbose};
-        store( $cache, $opts->{cache_file} );
-        my $cache_size = ( stat( $opts->{cache_file} ) )[7];
-        print 'Cache size: ' . convert_bytes($cache_size) . "\n";
     }
 
     return;
