@@ -343,6 +343,10 @@ if ( $opts->{threads} >= 2 && grep $opts->{threads} == $_, @valid_threads ) {
     }
 }
 
+unless ( eval 'require Date::Manip; import Date::Manip::Date; 1;' ) {
+    print "Date::Manip module needed...\n";
+}
+
 
 if ( ! defined $opts->{user} && ! $opts->{user} ) {
     $opts->{user} = user_prompt();
@@ -597,10 +601,16 @@ sub biggest_messages_report {
 
     print "\n\nFetching message details...\n";
 
+    my $skip_threads =
+        $num <= $opts->{threads}
+        ? 1
+        : 0
+        ;
+
     my $stime = time;
 
     my $fetched_messages =
-        $use_threaded_mode
+        $use_threaded_mode && ! $skip_threads
         ? threaded_fetch_msgs( $folder )
         : fetch_msgs( $folder )
         ;
@@ -1230,7 +1240,7 @@ sub folder_message_count_report {
         # beginning of the script, but, just to be safe in case anything was
         # modified during the runtime of this script...
         #
-        if ( ! check_cache( 'validated_folder_list', $_ ) ) {
+        if ( ! check_cache( $cache, 'validated_folder_list', $_ ) ) {
 
             if ( ! $imap->exists($_) ) {
                 show_error( "Error: $_ not a valid folder: $@\nLastError: " . $imap->LastError );
@@ -1242,11 +1252,9 @@ sub folder_message_count_report {
         # Try to get the count of messages from cache,
         # otherwise get the count manually.
         #
-        my $count = check_cache( 'message_count', $_ );
+        my $count = check_cache( $cache, 'message_count', $_ );
 
         if ( ! $count ) {
-
-            #show_error( "COUNT is now\n" . Dumper( $count ) );
 
             $imap->examine($_)
                 or show_error( "Error selecting $_: $@\n" );
@@ -1254,8 +1262,6 @@ sub folder_message_count_report {
             print "Checking folder: $_\n" if $opts->{verbose};
 
             $count = $imap->message_count();
-
-            #show_error( "COUNT is now\n" . Dumper( $count ) );
 
         }
 
@@ -1529,29 +1535,27 @@ sub fetch_folders {
     my $list         = [];
     my $menu_folders = [];
 
-    $list = check_cache('folder_list');
+    $list = check_cache( $cache, 'folder_list' );
 
-    if ( ! defined $list ) {
+    if ( ! $list ) {
 
         $list = $imap->folders
             or die_clean( 1, "Error fetching folders: $!\n" . $imap->LastError );
 
-        put_cache({ content_type => 'folder_list', values => $list });
+        put_cache({ cache => $cache, content_type => 'folder_list', values => $list });
 
     }
 
     print "Processing list of IMAP folders...\n";
 
-    # Here's where we filter out what we want from the list
-    # of folders.
+    # Here's where we filter out what we want from the list of folders.
     #
     my @filtered_list =
                            grep { my $item = $_; not grep { $item =~ m/$_/i } @$excludes_list }
            @$filter_list ? grep { my $item = $_;     grep { $item =~ m/$_/i } @$filter_list   } @$list : @$list;
 
-    # Run the exists method on the folder to compensate for
-    # the odd behavior that can come from using nested gmail
-    # labels.
+    # Run the exists method on the folder to compensate for the odd behavior
+    # that can come from using nested gmail labels.
     #
     my $max = scalar(@filtered_list);
 
@@ -1561,7 +1565,8 @@ sub fetch_folders {
     my $counter= 1;
 
     for my $ff ( @filtered_list ) {
-        if ( $opts->{force} || check_cache( 'validated_folder_list', $ff ) ) {
+
+        if ( $opts->{force} || check_cache( $cache, 'validated_folder_list', $ff ) ) {
 
             # The force option is allowed to short circuit
             # the imap->exists method...
@@ -1571,13 +1576,20 @@ sub fetch_folders {
         } else {
 
             if ( $imap->exists($ff) ) {
+
+                $bar->info( "Sent: " . $imap->Transaction . " STATUS \"$ff\"" );
+
                 push @$menu_folders, $ff;
-                put_cache({ content_type =>  'validated_folder_list', folder => $ff });
+                put_cache( { cache => $cache, content_type => 'validated_folder_list', folder => $ff } );
+
+            } else {
+
+                $bar->info('');
+
             }
 
         }
 
-        $bar->info( "Sent: " . $imap->Transaction . " STATUS \"$ff\"" );
         $bar->update( $counter++ );
         $bar->write;
 
@@ -1607,7 +1619,7 @@ sub fetch_msgs {
     #
     my $fetcher = {};
 
-    $fetcher = check_cache( 'fetched_messages', $folder );
+    $fetcher = check_cache( $cache, 'fetched_messages', $folder );
 
     return $fetcher if $fetcher;
 
@@ -1691,7 +1703,7 @@ sub fetch_msgs {
 
     }
 
-    put_cache({ content_type => 'fetched_messages', folder => $folder, values => $fetcher });
+    put_cache({ cache => $cache, content_type => 'fetched_messages', folder => $folder, values => $fetcher });
 
     return $fetcher;
 
@@ -1709,8 +1721,6 @@ sub threaded_fetch_msgs {
 
     my $folder = shift;
 
-    verbose( "THREADED FOLDER: " . Dumper( $folder ) );
-
     my @headers;
 
     # TODO
@@ -1723,11 +1733,11 @@ sub threaded_fetch_msgs {
     #
     my $fetcher = {};
 
-    $fetcher = check_cache( 'fetched_messages', $folder );
+    $fetcher = check_cache( $cache, 'fetched_messages', $folder );
 
-    verbose( "FETCHER NOW: " . Dumper( $fetcher ) );
+    my $fcount = scalar(keys %$fetcher);
 
-    return $fetcher if $fetcher;
+    return $fetcher if $fcount;
 
     # Quick sanity check to see if the chosen folder really exists, not all that
     # necessary because the folder list is well validated at the beginning of
@@ -1843,11 +1853,16 @@ sub threaded_fetch_msgs {
 
             print "\n\n";
 
+            # I suspected Term::Menus might be mucking with output buffering...
+            #
+            $|=1;
+
 
             # Before proceding, wait for each thread to finish collecting
             # messages by checking the fetcher status queue.
             #
             print "\nWaiting for threads to complete...\n";
+
             while ( 1 ) {
 
                 print '.';
@@ -1865,17 +1880,9 @@ sub threaded_fetch_msgs {
 
             }
 
-            # Rejoin the threads for a clean exit.
-            #
-           #for my $cur_bucket ( sort keys %$threaded_sequences ) {
-           #    $threads->[$cur_bucket]->join();
-           #}
-
         }
 
         print "\n\nThreads complete...\n\n";
-
-#_#     print "Progress bar thread ended...\n" if $opts->{verbose};
 
 
         # Now we that the threads have completed, iterate the values in our
@@ -1889,13 +1896,7 @@ sub threaded_fetch_msgs {
 
             my $pending = $fetched_queue->pending();
 
-            print "Total messages pending for processing: $pending\n\n";
-
-           #my $bar = IMAP::Progress->new( max => $pending, length => 10 );
-
-           #$bar->text('Parsing fetched messages:');
-
-           #my $parse_counter = 0;
+            print "\n\nTotal messages pending for processing: $pending\n\n";
 
             my %from_fetched_queue = $fetched_queue->extract( 0, $pending );
 
@@ -1920,9 +1921,12 @@ sub threaded_fetch_msgs {
 
     print "\n\n\n\n";
 
-    $sbar->text('Processing headers:');
 
     my $scounter = 0;
+
+    $sbar->text('Processing headers:');
+    $sbar->update($scounter);
+    $sbar->write;
 
     # Ugly.
     #
@@ -1957,7 +1961,7 @@ sub threaded_fetch_msgs {
     # Store our results in the cache then return the results.
     #
     print "Storing messages in cache...\n";
-    put_cache({ content_type => 'fetched_messages', folder => $folder, values => $fetcher });
+    put_cache({ cache => $cache, content_type => 'fetched_messages', folder => $folder, values => $fetcher });
 
     return $fetcher;
 
@@ -2005,8 +2009,6 @@ sub imap_thread {
                 #Debug_fh         => *DBG,
 
     ) or die "Cannot connect to host : $@";
-
-    #show_error( "CUR BUCKET: " . Dumper( $cur_bucket ) );
 
     # Reselect the folder so this thread is in the right place.  No validation
     # or exists check necessary at this stage.
@@ -2099,37 +2101,78 @@ sub init_cache {
 
     return unless $opts->{cache};
 
-    unless ( eval 'require DBM::Deep; import DBM::Deep; 1;' ) {
+    unless ( eval 'require DBI; import DBI; require DBD::SQLite; import DBD::SQLite; 1;' ) {
         return;
     }
 
-    return;
+    my $is_new_db =
+        -s $cfile
+        ? 0
+        : 1
+        ;
+
+    my $dsn = "dbi:SQLite:dbname=$cfile";
 
     my $c;
 
-    # If 'cache' file exists, load it, otherwise, instantiate a cache hashref.
-    #
-    if ( -r $cfile ) {
-        print "Loading cache...\n";
-        $c = retrieve($cfile);
-    } else {
+    my $err;
 
-        # Not particularly necessary, mainly for documentation purposes.
-        #
-        # All cache elements are stored as hashrefs because it's a lazy way of
-        # ensuring that I'm not stuffing duplicates into the cache.
-        #
-        $c->{ $opts->{server} }->{imap_folders}->{fetched_messages} = {};
-        $c->{ $opts->{server} }->{imap_folders}->{folders}          = {};
-        $c->{ $opts->{server} }->{imap_folders}                     = {};
-        $c->{ $opts->{server} }->{imap_folders}->{validated}        = {};
+    my $dbh = DBI->connect( $dsn, '', '' )
+        or $err = 1;
+
+    if ( $err ) {
+        warn "Unable to init cache db: $!\n";
+        return;
+    }
+
+    $dbh->do('PRAGMA cache_size = 16384;');
+    $dbh->do('PRAGMA page_size = 2048;');
+    $dbh->do('PRAGMA temp_store = 2;');
+    $dbh->do('PRAGMA synchronous = 0;');
+
+    if ( $is_new_db ) {
+
+        my $sql = q[
+
+            CREATE TABLE folders (
+                id              INTEGER PRIMARY KEY,
+                server          TEXT NOT NULL,
+                folder          TEXT UNIQUE NOT NULL,
+                msg_count       INTEGER,
+                validated       BOOLEAN,
+                last_update     INTEGER
+            );
+        ];
+
+        my $sth = $dbh->prepare( $sql );
+
+        my $err = $sth->execute;
+
+        $sql = q[
+
+            CREATE TABLE messages (
+                server          TEXT NOT NULL,
+                folder          TEXT NOT NULL,
+                msg_id          INTEGER NOT NULL PRIMARY KEY,
+                to_address      TEXT,
+                from_address    TEXT,
+                subject         TEXT,
+                date            INTEGER NOT NULL,
+                size            INTEGER NOT NULL,
+                last_update     INTEGER
+            );
+
+        ];
+
+        $sth = $dbh->prepare( $sql );
+
+        $err = $sth->execute();
 
     }
 
-    $c->{updated} = 0;
+    $dbh->{AutoCommit} = 1;
 
-    return $c;
-
+    return $dbh;
 
 } # }}}
 
@@ -2183,6 +2226,167 @@ sub init_cache_storable {
 #
 sub check_cache {
 
+    my $dbh          = shift;
+    my $content_type = shift;
+    my $value        = shift;
+
+    return unless $opts->{cache};
+
+    my $cur_time = time;
+
+    if ( $content_type eq 'folder_list' ) {
+
+        # {{{ folder_list cache check
+
+        # Checks the cached list of folders and returns an arrayref list of
+        # them.
+
+
+        my $sql = q[
+
+            SELECT
+                folder
+            FROM
+                folders
+            WHERE
+                server = ?
+
+        ];
+
+        my $folderlist = [];
+
+        push @$folderlist, $_->{folder}
+            for @{ $dbh->selectall_arrayref( $sql, { Slice => {} },
+                                             $opts->{server} ) };
+
+        if ( scalar(@$folderlist) ) {
+            return $folderlist;
+        } else {
+            return;
+        }
+
+        # }}}
+
+    } elsif ( $content_type eq 'validated_folder_list' ) {
+
+        # {{{ validated folder cache check
+
+        # The list of VALIDATED folders is cached separately.  This just returns
+        # a true/false if a folder appears in the list of validated folders.
+        # (Validated folders have passed a test using the 'exists' method.)
+        #
+        return unless defined $value && $value;
+
+
+        my $sql = q[
+            SELECT
+                folder
+            FROM
+                FOLDERS
+            WHERE
+                server = ?
+                AND validated = 1
+
+        ];
+
+        my $results = [];
+
+        push @$results, $_->{folder}
+            for @{ $dbh->selectall_arrayref( $sql, { Slice => {} },
+                                             $opts->{server} ) };
+        return $results->[0];
+
+        return;
+
+        if ( defined $cache->{ $opts->{server} }->{imap_folders}->{validated}
+             && ref $cache->{ $opts->{server} }->{imap_folders}->{validated} eq 'HASH' ) {
+
+            my $result = grep $value eq $_, keys %{ $cache->{ $opts->{server} }->{imap_folders}->{validated} };
+
+            return $result;
+
+        }
+
+        # }}}
+
+    } elsif ( $content_type eq 'fetched_messages' ) {
+
+        # {{{ fetched messages cache check
+
+        return unless defined $value && $value;
+
+        my $sql = q[
+            SELECT
+                msg_id,
+                to_address,
+                from_address,
+                subject,
+                date,
+                size
+            FROM
+                messages
+            WHERE
+                folder = ?
+        ];
+
+        my $msgs = {};
+
+        for ( @{ $dbh->selectall_arrayref( $sql, { Slice => {} }, $value ) } ) {
+
+            $msgs->{$_->{msg_id}}->{$header_table{'From'}}    = $_->{from_address};
+            $msgs->{$_->{msg_id}}->{$header_table{'Date'}}    = $_->{date};
+            $msgs->{$_->{msg_id}}->{$header_table{'Subject'}} = $_->{subject};
+            $msgs->{$_->{msg_id}}->{$header_table{'To'}}      = $_->{to_address};
+            $msgs->{$_->{msg_id}}->{$header_table{'Size'}}    = $_->{size};
+
+        }
+
+        return $msgs;
+
+        # }}}
+
+    } elsif ( $content_type eq 'message_count' ) {
+
+        # {{{ cached message count check
+
+        # This looks into the cache of messages and if messages have been
+        # cached, returns the count of the number of messages stored there.
+        # Folder message counts themselves are not actually cached.
+        #
+
+        return unless defined $value && $value;
+
+        if ( defined $cache->{ $opts->{server} }->{imap_folders}->{fetched_messages}->{$value}->{messages}
+             && ref $cache->{ $opts->{server} }->{imap_folders}->{fetched_messages}->{$value}->{messages} eq 'HASH' ) {
+
+            my $result = scalar( keys %{ $cache->{ $opts->{server} }->{imap_folders}->{fetched_messages}->{$value}->{messages} } );
+
+            return $result;
+
+        }
+
+        # }}}
+
+    }
+
+    return;
+
+} # }}}
+
+# {{{ check_cache_storable
+#
+# My crude method of a caching mechanism.
+#
+# Feed this function the type of content and value for which to look.  Returns
+# cached elements based on the different types of information, arrayrefs,
+# hashrefs, bools, etc.
+#
+# TODO
+#
+# Implement cache aging
+#
+sub check_cache_storable {
+
     my $content_type = shift;
     my $value        = shift;
 
@@ -2217,8 +2421,6 @@ sub check_cache {
            ## it has a value and it is greater than the
            ## maximum cache age.
            ##
-           #show_error( "LAST UPDATE: " . Dumper( $last_update ) );
-           #show_error( "AGE: " . Dumper( $age ) );
 
            #if ( defined $age && $age && $age > 0 && $age > $opts->{cache_age} ) {
            #    return;
@@ -2299,6 +2501,192 @@ sub put_cache {
 
     return unless $opts->{cache};
 
+    my $dbh          = $args->{cache};
+    my $content_type = $args->{content_type};
+    my $values       = $args->{values};
+    my $folder       = $args->{folder};
+
+    return unless $dbh;
+    return unless $content_type;
+
+    if ( $content_type eq 'folder_list' ) {
+
+        # {{{ folder_list cache population
+
+        return unless ref $values eq 'ARRAY';
+
+        $dbh->begin_work;
+
+        my $sql = q[
+
+            INSERT INTO folders (
+                server,
+                folder,
+                last_update
+            ) VALUES (
+                ?,
+                ?,
+                ?
+            )
+
+        ];
+
+        my $cur_time = time;
+
+        for my $cur_folder (@$values) {
+
+            my $sth = $dbh->prepare($sql);
+
+            $sth->execute( $opts->{server}, $cur_folder, $cur_time );
+
+            print "Inserted into DB: " . $opts->{server} . ' ' . $cur_folder . ' ' . $cur_time . "\n";
+
+           #if ( $dbh->errstr ) {
+           #    warn "Error insert into cache: " . $dbh->errstr . "\n";
+           #    $dbh->rollback;
+           #    return;
+           #}
+
+        }
+
+        $dbh->commit;
+
+        # }}}
+
+    } elsif ( $content_type eq 'validated_folder_list' ) {
+
+        # {{{ validated folder list cache population
+
+        return unless $folder;
+        return if ref $folder;
+
+        $dbh->begin_work;
+
+        my $sql = q[
+            INSERT OR REPLACE INTO folders (
+                server,
+                folder,
+                validated,
+                last_update
+            ) VALUES (
+                ?,
+                ?,
+                ?,
+                ?
+            )
+        ];
+
+        my $sth = $dbh->prepare($sql);
+
+        my $err;
+
+        $sth->execute( $opts->{server}, $folder, 1, time )
+            or $err = 1;
+
+        if ( $err ) {
+            warn "Error caching validated folder: $!\n";
+            $dbh->rollback;
+            return;
+        }
+
+        $dbh->commit;
+
+        # }}}
+
+    } elsif ( $content_type eq 'fetched_messages' ) {
+
+        # {{{ fetched message cash population
+
+        return unless ref $values eq 'HASH';
+        return unless $folder;
+
+        $dbh->begin_work;
+
+        my $sql = q[
+            INSERT OR REPLACE INTO messages (
+                server,
+                msg_id,
+                folder,
+                to_address,
+                from_address,
+                subject,
+                date,
+                size,
+                last_update
+            ) VALUES (
+                ?,
+                ?,
+                ?,
+                ?,
+                ?,
+                ?,
+                ?,
+                ?,
+                ?
+            )
+        ];
+
+        my $mcount = scalar( keys %$values );
+
+        my $cbar = IMAP::Progress->new( max    => $mcount,
+                                        length => 10 );
+
+        $cbar->text('Caching:');
+        $cbar->info('messages');
+
+        my $counter = 0;
+
+        $cbar->update( $counter++ );
+        $cbar->write;
+
+        my $sth = $dbh->prepare($sql);
+
+        for ( keys %$values ) {
+            my $result = $sth->execute(
+                $opts->{server},
+                $_,
+                $folder,
+                $values->{$_}->{ $header_table{To} },
+                $values->{$_}->{ $header_table{From} },
+                $values->{$_}->{ $header_table{Subject} },
+                convert_date_to_epoch( $values->{$_}->{ $header_table{Date} } ),
+                $values->{$_}->{ $header_table{Size} },
+                time
+            );
+
+            if ( $dbh->errstr ) {
+                warn "Message cache insert error: " . $dbh->errstr . "\n";
+                $dbh->rollback;
+                return;
+            }
+
+            $cbar->update( $counter++ );
+            $cbar->write;
+
+        }
+
+        $dbh->commit;
+
+        # }}}
+
+    }
+
+    return;
+
+} # }}}
+
+# {{{ put_cache_storable
+#
+# Handle inserting the various types of information we want to cache.
+#
+# Sticks in the current time value so for cache aging purposes later.
+#
+sub put_cache_storable {
+
+    my $args = shift;
+
+    return unless $opts->{cache};
+
     my $content_type = $args->{content_type};
     my $values       = $args->{values};
     my $folder       = $args->{folder};
@@ -2339,7 +2727,7 @@ sub put_cache {
     }
 
     if ( $cache->{updated} ) {
-        print "\nWriting cache...\n";
+        print "\nWriting cache...\n" if $opts->{verbose};
         store( $cache, $opts->{cache_file} );
         my $cache_size = ( stat( $opts->{cache_file} ) )[7];
         print 'Cache size: ' . convert_bytes($cache_size) . "\n";
@@ -2610,7 +2998,7 @@ for ( sort { $types->{$a} cmp $types->{$b} } keys %$types ) {
 
 # pretty print the types of reports...
 #
-format STDOUT = 
+format STDOUT =
 @<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<  @*
 $_, $types->{$_}
 .
@@ -2654,10 +3042,6 @@ sub break_fetch {
 sub generate_subject_search_string {
 
     my ( $folder, $date, $subject ) = @_;
-
-    unless ( eval 'require Date::Manip; import Date::Manip::Date; 1;' ) {
-        return ' ';
-    }
 
     my %folders = (
                     'INBOX'             => 'in:inbox',
@@ -2826,6 +3210,23 @@ sub read_config_file {
 
 } # }}}
 
+# {{{ convert_date_to_epoch
+#
+sub convert_date_to_epoch {
+
+    my $date = shift;
+
+    my $dm = Date::Manip::Date->new();
+
+    $dm->parse($date);
+    my $epoch = $dm->printf('%s');
+
+    return $epoch
+        ? $epoch
+        : 0;
+
+}    # }}}
+
 # {{{ sub convert_bytes
 #
 # For pretty printing byte numbers.
@@ -2833,6 +3234,8 @@ sub read_config_file {
 sub convert_bytes {
 
     my $bytes = shift;
+
+    return unless $bytes;
 
     my $KB = $bytes / 1024;
 
