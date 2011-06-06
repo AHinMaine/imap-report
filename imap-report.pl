@@ -496,7 +496,9 @@ while (1) {
     #
     if ( $action eq $reports->{biggest_messages_report} ) {
 
-        @report = biggest_messages_report();
+        @report = messages_by_header_report({ header => 'Size' });
+
+        #@report = biggest_messages_report();
 
     } elsif ( $action eq $reports->{size_report} ) {
 
@@ -508,12 +510,11 @@ while (1) {
 
     } elsif ( $action eq $reports->{folder_message_sizes_report} ) {
 
-        @report = folder_message_sizes_report();
+        #@report = folder_message_sizes_report();
 
     } elsif ( $action eq $reports->{messages_by_subject_report} ) {
 
-        #@report = messages_by_subject_report();
-        @report = messages_by_header_report({ header => 'Subject' });
+        @report = messages_by_subject_report();
 
     } elsif ( $action eq $reports->{messages_by_from_address_report} ) {
 
@@ -916,74 +917,117 @@ sub messages_by_header_report {
 
     my $num = $imap->message_count;
 
-    my $msgs =
+    my $msgs_count =
         $use_threaded_mode
         ? threaded_fetch_msgs( $folder )
         : fetch_msgs( $folder )
         ;
 
+    #show_error( "MSGS_COUNT: " . Dumper( $msgs_count ) );
+    #show_error( "ref MSGS_COUNT: " . Dumper( ref $msgs_count ) );
+
     my $ftime = time;
     my $elapsed = $ftime - $stime;
 
-    my $header_stats = {};
-
-    for ( keys %$msgs ) {
-
-        my $imap_header = $msgs->{$_}->{ $header_table{$header} };
-
-        if ( defined $header_stats->{$imap_header} ) {
-            $header_stats->{$imap_header}++;
-        } else {
-            $header_stats->{$imap_header} = 1;
+    my $msgs = cache_report(
+        {   cache       => $cache,
+            report_type => 'report_by_header',
+            folder      => $folder,
+            header      => $header
         }
+    );
 
-    }
+    #show_error( "MSGS ARRAYREF: " . Dumper( $msgs ) );
+    #show_error( "ref MSGS ARRAYREF: " . Dumper( ref $msgs ) );
 
-    push @cur_report, 'Total messages processed: ' . scalar( keys %$msgs ) . "\n\n";
+#   my $header_stats = {};
+
+#   for ( keys %$msgs ) {
+
+#       my $imap_header = $msgs->{$_}->{ $header_table{$header} };
+
+#       if ( defined $header_stats->{$imap_header} ) {
+#           $header_stats->{$imap_header}++;
+#       } else {
+#           $header_stats->{$imap_header} = 1;
+#       }
+
+#   }
+
+    push @cur_report, 'Total messages processed: ' . $msgs_count . "\n\n";
     push @cur_report, 'Top ' . $opts->{top} . " $header addresses: \n\n\n";
     push @cur_report, "Count\t\t\t$header\n" . '-' x 60 . "\n";
 
-    my $counter = 1;
+#   my $counter = 1;
 
     # sort the header field by the count of their
     # occurrences.
     #
-    for ( reverse sort { $header_stats->{$a} <=> $header_stats->{$b} } keys %$header_stats ) {
+#   for ( reverse sort { $header_stats->{$a} <=> $header_stats->{$b} } keys %$header_stats ) {
 
-        push @cur_report, $header_stats->{$_}
-        . "\t\t\t"
-        . $_
-        . "\n"
-        ;
+#       push @cur_report, $header_stats->{$_}
+#       . "\t\t\t"
+#       . $_
+#       . "\n"
+#       ;
 
-        $counter++;
+#       $counter++;
 
-        last if $counter >= $opts->{top};
+#       last if $counter >= $opts->{top};
 
-    }
+#   }
 
     push @cur_report, "\n\n" . '-' x 60 . "\n\n";
+
+
+    my $display_header;
+
+    if ( $header eq 'Size' ) {
+        $display_header = 'Subject';
+    } else {
+        $display_header = $header;
+    }
 
     push @cur_report,
           "\n\n\n"
         . '-' x 60 . "\n\n"
         . "All messages, sorted by $header\n\n\n"
-        . "Date\t\t\t\t\tSize\t\t$header\n"
+        . "Date\t\t\t\tSize\t\t$display_header\n"
         . '-' x 60 . "\n\n";
 
-    # The entire list of messages, sorted by the chosen header field.
-    #
-    for ( sort { $msgs->{$a}->{ $header_table{$header} } cmp $msgs->{$b}->{ $header_table{$header} } } keys %$msgs ) {
+    for ( @$msgs ) {
 
-        push @cur_report,
-              $msgs->{$_}->{ $header_table{'Date'} } . "\t\t"
-            . convert_bytes( $msgs->{$_}->{ $header_table{'Size'} } ) . "\t\t"
-            . $msgs->{$_}->{ $header_table{$header} } . "\n";
+        my $folder       = $_->[0];
+        my $msg_id       = $_->[1];
+        my $to_address   = $_->[2];
+        my $from_address = $_->[3];
+        my $date         = $_->[4];
+        my $subject      = $_->[5];
+        my $size         = $_->[6];
+
+
+        my $report_header;
+
+        if ( $header eq 'From' ) {
+            $report_header = $from_address;
+        } elsif ( $header eq 'To' ) {
+            $report_header = $to_address;
+        } elsif ( $header eq 'Subject' ) {
+            $report_header = $subject;
+        } elsif ( $header eq 'Size' ) {
+            $report_header = $subject;
+        } else {
+            $report_header = $size;
+        }
+
+        push @cur_report, "$date\t$size\t\t$report_header\n";
 
     }
 
+    #show_error( "CUR_REPORT" . Dumper( @cur_report ) );
+
     push @cur_report, "\n\n\nTime to fetch: $elapsed seconds\n";
-    push @cur_report, "Iterated " . scalar( keys %$msgs ) . " messages.\n\n";
+    #push @cur_report, "Iterated " . scalar( keys %$msgs ) . " messages.\n\n";
 
     return @cur_report;
 
@@ -1698,15 +1742,15 @@ sub threaded_fetch_msgs {
     #
     push @headers, $header_table{$_} for qw/Date Subject Size To From/;
 
-    # This will hold the entire result of fetching operations.
-    #
-    my $fetcher = {};
+    my $cached_count = check_cache( $cache, 'fetched_messages', $folder );
 
-    $fetcher = check_cache( $cache, 'fetched_messages', $folder );
-
-    my $fcount = scalar(keys %$fetcher);
-
-    return $fetcher if $fcount;
+    if ( $cached_count ) {
+        print "Found $cached_count cached messages\n";
+        return $cached_count;
+    } else {
+        warn "Cache contains no messages for folder $folder\n";
+        return;
+    }
 
     # Quick sanity check to see if the chosen folder really exists, not all that
     # necessary because the folder list is well validated at the beginning of
@@ -1721,6 +1765,8 @@ sub threaded_fetch_msgs {
     $imap->examine($folder)
         or show_error( "Error selecting $folder: $@\n" );
 
+
+    my $fetcher = {};
 
     # One more quick sanity check to make sure we really are in a folder and
     # that folder is in a select (examine) state.
@@ -1748,30 +1794,9 @@ sub threaded_fetch_msgs {
         #
         my $threaded_sequences = threaded_sequence_chunker( $msg_ids );
 
-        #ddump( 'sequences', \@sequences ) if $opts->{debug};
-
-        #my $num_blocks;
-
-       #for my $cur_bucket ( keys %$threaded_sequences ) {
-       #    for my $cur_msg_set_list ( @{$threaded_sequences->{$cur_bucket}} ) {
-       #        $num_blocks += scalar @$cur_msg_set_list;
-       #    }
-       #}
-
-        #my $prog_bar = IMAP::Progress->new( max => $num_blocks, length => 10 );
-
-        #$prog_bar->text( "$msg_count remaining" );
-        #$prog_bar->update( 0 );
-        #$prog_bar->write;
-
-        #my $iter = 1;
-
-        #my $eta = [];
-
-        # Trying to come up with a way of trapping a Ctrl-C
-        # to gracefully finish the current iteration and
-        # finish producing the report.  It doesn't work very
-        # well.
+        # Trying to come up with a way of trapping a Ctrl-C to gracefully finish
+        # the current iteration and finish producing the report.  It doesn't
+        # work very well.
         #
         #$SIG{'INT'} = 'break_fetch';
 
@@ -1782,10 +1807,6 @@ sub threaded_fetch_msgs {
         # stats.
         #
         {
-
-      #_#   my $progress_bar = IMAP::Progress->new( max => $msg_count, length => 10 );
-
-      #_#   my $progress_thread = threads->create( \&threaded_progress_bar, $progress_bar )->detach();
 
             print "\nInitiating fetcher threads: ";
 
@@ -1886,53 +1907,53 @@ sub threaded_fetch_msgs {
 
     my $max = ( scalar(keys %$fetcher) );
 
-    my $sbar = IMAP::Progress->new( max => $max, length => 10 );
+#   my $sbar = IMAP::Progress->new( max => $max, length => 10 );
 
     print "\n\n\n\n";
 
 
-    my $scounter = 0;
+#   my $scounter = 0;
 
-    $sbar->text('Processing headers:');
-    $sbar->update($scounter);
-    $sbar->write;
+#   $sbar->text('Processing headers:');
+#   $sbar->update($scounter);
+#   $sbar->write;
 
-    # Ugly.
-    #
-    # Iterate the whole list of fetched messages and fix each value returned.
-    # The header information has some issues like CRLF and such.
-    #
-    print "Fixing message headers...\n\n";
+#   # Ugly.
+#   #
+#   # Iterate the whole list of fetched messages and fix each value returned.
+#   # The header information has some issues like CRLF and such.
+#   #
+#    print "Fixing message headers...\n\n";
+#
+#    for my $cur_id ( keys %$fetcher ) {
+#
+#        for my $cur_header (@headers) {
+#
+#            $fetcher->{$cur_id}->{$cur_header} =
+#                stripper( $header_table{$cur_header},
+#                          $fetcher->{$cur_id}->{$cur_header} );
+#
+#
+#            $fetcher->{$cur_id}->{$cur_header} = '[EmptyValue]'
+#                unless $fetcher->{$cur_id}->{$cur_header};
+#
+#        }
+#
+#        # Keep the counter from updating too frequently...
+#       #
+#       if ( ( ( $scounter % 10 ) + 1 )  == 10 ) {
+#           $sbar->update( $scounter++ );
+#           $sbar->write;
+#       }
 
-    for my $cur_id ( keys %$fetcher ) {
-
-        for my $cur_header (@headers) {
-
-            $fetcher->{$cur_id}->{$cur_header} =
-                stripper( $header_table{$cur_header},
-                          $fetcher->{$cur_id}->{$cur_header} );
-
-
-            $fetcher->{$cur_id}->{$cur_header} = '[EmptyValue]'
-                unless $fetcher->{$cur_id}->{$cur_header};
-
-        }
-
-        # Keep the counter from updating too frequently...
-        #
-        if ( ( ( $scounter % 10 ) + 1 )  == 10 ) {
-            $sbar->update( $scounter++ );
-            $sbar->write;
-        }
-
-    }
+#   }
 
     # Store our results in the cache then return the results.
     #
     print "Storing messages in cache...\n";
     put_cache({ cache => $cache, content_type => 'fetched_messages', folder => $folder, values => $fetcher });
 
-    return $fetcher;
+    return $max;
 
 } # }}}
 
@@ -2001,8 +2022,25 @@ sub imap_thread {
         lock( $fetched_queue );
 
         for my $m_id ( keys %$cur_fetcher ) {
+
             next unless $m_id;
+
+            # Iterate the list of fetched messages and fix each value returned.
+            # The header information has some issues like CRLF and such.
+            # 
+            for my $cur_header (@headers) {
+
+                $cur_fetcher->{$m_id}->{$cur_header} =
+                    stripper( $header_table{$cur_header},
+                            $cur_fetcher->{$m_id}->{$cur_header} );
+
+                $cur_fetcher->{$m_id}->{$cur_header} = '[EmptyValue]'
+                    unless $cur_fetcher->{$m_id}->{$cur_header};
+
+            }
+
             $fetched_queue->enqueue( $m_id => $cur_fetcher->{$m_id} );
+
         }
 
     }
@@ -2146,15 +2184,103 @@ sub init_cache {
 
 # {{{ cache_report
 #
+# Here's where we're going to start generating our reports.  
+#
+# Expects to receive an anon hashref contain the cache (dbh) object, type of
+# report we want to run, the name of the folder, and the header to be used for
+# sorting operations in the reports.
+#
 sub cache_report {
 
-    my $dbh          = shift;
-    my $report_type  = shift;
-    my $folder       = shift;
+    my $args = shift;
 
-    my $cur_time = time;
+    my $dbh          = $args->{cache};
+    my $report_type  = $args->{report_type};
+    my $folder       = $args->{folder};
+    my $header       = $args->{header};
 
-    if ( $report_type eq 'folder_list' ) {
+    if ( $report_type eq 'report_by_header' ) {
+
+        return unless $folder;
+        return unless $header;
+
+        my $sql = q[
+            SELECT
+                folder,
+                msg_id,
+                to_address,
+                from_address,
+                date,
+                subject,
+                size
+            FROM
+                messages
+            WHERE
+                server = ?
+                AND folder = ?
+                AND size >= ?
+        ];
+
+        # TODO
+        #
+        # Fix this ridiculousness...
+        #
+        my $order_by;
+
+        if ( $header eq 'To' ) {
+            $order_by = 'to_address';
+        } elsif ( $header eq 'From' ) {
+            $order_by = 'from_address';
+        } elsif ( $header eq 'Date' ) {
+            $order_by = 'date';
+        } elsif ( $header eq 'Subject' ) {
+            $order_by = 'Subject';
+        } elsif ( $header eq 'Size' ) {
+            $order_by = 'size';
+        } else {
+            $order_by = 'size';
+        }
+
+        $sql .= qq[
+            ORDER BY $order_by DESC
+        ];
+
+        $sql .= q[
+            LIMIT ?
+        ];
+
+        my @results = @{
+            $dbh->selectall_arrayref(
+                                      $sql,
+                                      {},
+                                      $opts->{server},
+                                      $folder,
+                                      $opts->{min},
+                                      $opts->{top}
+                                    )
+            };
+
+        ddump( 'selectall_results', @results );
+
+        my $messages = [];
+
+        push @$messages,
+            [
+              $_->[0],
+              $_->[1],
+              $_->[2],
+              $_->[3],
+              scalar localtime $_->[4],
+              $_->[5],
+              convert_bytes( $_->[6] )
+            ]
+            for @results;
+
+        ddump( 'header report of collected messages', $messages );
+
+        return $messages;
+
+    } elsif ( $report_type eq 'folder_list' ) {
 
         # {{{ folder_list cache check
 
@@ -2372,31 +2498,50 @@ sub check_cache {
 
         my $sql = q[
             SELECT
-                msg_id,
-                to_address,
-                from_address,
-                subject,
-                date,
-                size
+                count(msg_id)
             FROM
                 messages
             WHERE
                 folder = ?
         ];
 
-        my $msgs = {};
+        my $sth = $dbh->prepare( $sql );
 
-        for ( @{ $dbh->selectall_arrayref( $sql, { Slice => {} }, $value ) } ) {
+        $sth->execute($value);
 
-            $msgs->{$_->{msg_id}}->{$header_table{'From'}}    = $_->{from_address};
-            $msgs->{$_->{msg_id}}->{$header_table{'Date'}}    = $_->{date};
-            $msgs->{$_->{msg_id}}->{$header_table{'Subject'}} = $_->{subject};
-            $msgs->{$_->{msg_id}}->{$header_table{'To'}}      = $_->{to_address};
-            $msgs->{$_->{msg_id}}->{$header_table{'Size'}}    = $_->{size};
+        my $count = $sth->fetch;
 
-        }
+        return 0 unless $count->[0];
+        return $count->[0];
 
-        return $msgs;
+        
+       #my $sql = q[
+       #    SELECT
+       #        msg_id,
+       #        to_address,
+       #        from_address,
+       #        subject,
+       #        date,
+       #        size
+       #    FROM
+       #        messages
+       #    WHERE
+       #        folder = ?
+       #];
+
+       #my $msgs = {};
+
+       #for ( @{ $dbh->selectall_arrayref( $sql, { Slice => {} }, $value ) } ) {
+
+       #    $msgs->{$_->{msg_id}}->{$header_table{'From'}}    = $_->{from_address};
+       #    $msgs->{$_->{msg_id}}->{$header_table{'Date'}}    = $_->{date};
+       #    $msgs->{$_->{msg_id}}->{$header_table{'Subject'}} = $_->{subject};
+       #    $msgs->{$_->{msg_id}}->{$header_table{'To'}}      = $_->{to_address};
+       #    $msgs->{$_->{msg_id}}->{$header_table{'Size'}}    = $_->{size};
+
+       #}
+
+       #return $msgs;
 
         # }}}
 
