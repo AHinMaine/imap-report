@@ -1578,11 +1578,255 @@ sub print_report {
     print RPT $_ for @$report;
     close RPT;
 
-    #system( "less -niSRX $file" );
-    system( "cat $file" );
+    system( "less -niSRX $file" );
+    #system( "cat $file" );
 
     die_clean( 0, "Quitting" )
         if $opts->{list};
+
+} # }}}
+
+# }}}
+
+# {{{ Message processing
+
+# {{{ threaded_sequence_chunker
+#
+# This is where we take our big list of message id's and split it into chunks.
+# Expects to receive one param, a Mail::IMAPClient::MessageSet object containing
+# our message id's.
+#
+# Returns an array of M::I::MessageSet objects, carefully sorted into different
+# buckets so that no threads will be attempting to fetch the same messages.
+# Divides the number of messages evenly between our number threads.
+#
+# The reason for the back-and-forth switching from lists to MessageSet objects
+# is because M::I::MessageSet makes the effort to express the list of message
+# ids in optimal RFC2060 representation.
+#
+sub threaded_sequence_chunker {
+
+    my $all_msg_ids = shift;
+
+    show_error( 'Error processing sequences' ) unless $all_msg_ids;
+
+    my $message_count = scalar(@$all_msg_ids);
+
+    my $max = int( $message_count / $opts->{threads} );
+
+    my @cur_block;
+
+    my $msg_id_buckets  = {};
+    my $msg_set_buckets = {};
+
+    my $counter = 0;
+
+    while ( my @cur_block = splice @$all_msg_ids, 0, $max ) {
+
+        my $bucket_id = $counter % $opts->{threads};
+        my $cur_set = Mail::IMAPClient::MessageSet->new( @cur_block );
+        push @{$msg_set_buckets->{$bucket_id}}, $cur_set;
+        $counter++;
+
+    }
+
+    verbose( "Sequences: " . Dumper( $msg_set_buckets ) );
+
+    return $msg_set_buckets;
+
+} # }}}
+
+# {{{ stripper
+#
+# Oddly, the chomp function behaves in an unexpected way on subjects and other
+# headers returned from the imap server.  I know it's an issue of LF vs. CR, but
+# I still couldn't get it to behave cleanly, so I did it this way rather than
+# any chomp chop chomp monkey business...
+#
+sub stripper {
+
+    my $name  = shift;
+    my $field = shift;
+
+    return unless $name;
+    return unless $field;
+
+    $field =~ s/\n+//;
+    $field =~ s/\r+//;
+    $field =~ s/\R+//;
+    $field =~ s/^\s+//;
+    $field =~ s/\s+$//;
+
+    # Strip off the name of the envelope attribute
+    #
+    if ( $field =~ m/^$name:\s+(.*)$/ ) {
+        $field = $1;
+    }
+
+    # For from addresses, just grab the address.
+    #
+    if ( $name eq 'From' or $name eq 'To' ) {
+        $field =~ m/[<](.*)[>]/;
+        $field = $1;
+    }
+
+    # For Dates, convert to epoch
+    #
+    if ( $name eq 'Date' ) {
+        my $epoch = convert_date_to_epoch( $field );
+        $field = $epoch;
+    }
+
+    # Strip off the subject cruft...
+    #
+    if ( $name eq 'Subject' ) {
+        $field =~ s/^Re:\s+//gi;
+        $field =~ s/^Fwd:\s+//gi;
+        $field =~ s/\s+Re:\s+//gi;
+        $field =~ s/\s+Fwd:\s+//gi;
+    }
+
+
+    if ( ! $field ) {
+        $field = ']]EMPTY[[';
+    }
+
+    return $field;
+
+} # }}}
+
+# {{{ break_fetch
+#
+# Yeah.  This doesn't work right.
+#
+sub break_fetch {
+
+    print "Will break after the current fetch...\n";
+    $break = 1;
+
+    return;
+
+} # }}}
+
+# {{{ generate_subject_search_string
+#
+# To display a helpful string you can cut and paste directly into the gmail
+# search pane to search for the reported message.
+#
+sub generate_subject_search_string {
+
+    my ( $folder, $date, $subject ) = @_;
+
+    my %folders = (
+                    'INBOX'             => 'in:inbox',
+                    '[Gmail]/Sent Mail' => 'is:sent',
+                    'Sent'              => 'is:sent',
+                    'Sent Items'        => 'is:sent',
+                    '[Gmail]/Spam'      => 'is:spam',
+                    '[Gmail]/Starred'   => 'is:starred',
+                    '[Gmail]/All Mail'  => 'in:anywhere',
+    );
+
+    my $label;
+
+    if ( defined $folders{$folder} ) {
+        $label = $folders{$folder};
+    } else {
+        $label = 'label:' . '"' . $folder . '"';
+    }
+
+    my $dm = Date::Manip::Date->new();
+
+    my ( $bdate, $adate );
+
+    my $aresult = $dm->parse($date);
+
+    if ( $aresult ) {
+        $bdate = '';
+        $adate = '';
+    } else {
+
+        my $parsed_adate = $dm->printf('%Y/%m/%d');
+        my $aepoch       = $dm->printf('%s');
+        my $bepoch       = $aepoch + ( 24 * 60 * 60 );
+        my $bresult      = $dm->parse("epoch $bepoch");
+        my $parsed_bdate = $dm->printf('%Y/%m/%d');
+
+        $adate = "after:$parsed_adate";
+        $bdate = "before:$parsed_bdate";
+
+    }
+
+    return
+        join( ' ',
+              "subject:\"$subject\"",
+              $adate,
+              $bdate,
+              $label );
+
+} # }}}
+
+# {{{ generate_search_string
+#
+# To display a helpful string you can cut and paste directly into the gmail
+# search pane to search for the reported message.
+#
+sub generate_search_string {
+
+    my $args = shift;
+
+
+    my $folder = $args->{folder};
+    my $date   = $args->{date};
+    my $header = $args->{header};
+    my $value  = $args->{value};
+
+    my %folders = (
+                    'INBOX'             => 'in:inbox',
+                    '[Gmail]/Sent Mail' => 'is:sent',
+                    'Sent'              => 'is:sent',
+                    'Sent Items'        => 'is:sent',
+                    '[Gmail]/Spam'      => 'is:spam',
+                    '[Gmail]/Starred'   => 'is:starred',
+                    '[Gmail]/All Mail'  => 'in:anywhere',
+    );
+
+    my $label;
+
+    if ( defined $folders{$folder} ) {
+        $label = $folders{$folder};
+    } else {
+        $label = 'label:' . '"' . $folder . '"';
+    }
+
+    my $dm = Date::Manip::Date->new();
+
+    my ( $bdate, $adate );
+
+    my $aresult = $dm->parse($date);
+
+    if ( $aresult ) {
+        $bdate = '';
+        $adate = '';
+    } else {
+
+        my $parsed_adate = $dm->printf('%Y/%m/%d');
+        my $aepoch       = $dm->printf('%s');
+        my $bepoch       = $aepoch + ( 24 * 60 * 60 );
+        my $bresult      = $dm->parse("epoch $bepoch");
+        my $parsed_bdate = $dm->printf('%Y/%m/%d');
+
+        $adate = "after:$parsed_adate";
+        $bdate = "before:$parsed_bdate";
+
+    }
+
+    return
+        join( ' ',
+              "$header:\"$value\"",
+              $adate,
+              $bdate,
+              $label );
 
 } # }}}
 
@@ -3220,7 +3464,7 @@ sub put_cache {
                 $values->{$_}->{ $header_table{To} },
                 $values->{$_}->{ $header_table{From} },
                 $values->{$_}->{ $header_table{Subject} },
-                convert_date_to_epoch( $values->{$_}->{ $header_table{Date} } ),
+                $values->{$_}->{ $header_table{Date} },
                 $values->{$_}->{ $header_table{Size} },
                 $in_time
             );
@@ -3245,250 +3489,6 @@ sub put_cache {
     }
 
     return;
-
-} # }}}
-
-# }}}
-
-# {{{ Message processing
-
-# {{{ threaded_sequence_chunker
-#
-# This is where we take our big list of message id's and split it into chunks.
-# Expects to receive one param, a Mail::IMAPClient::MessageSet object containing
-# our message id's.
-#
-# Returns an array of M::I::MessageSet objects, carefully sorted into different
-# buckets so that no threads will be attempting to fetch the same messages.
-# Divides the number of messages evenly between our number threads.
-#
-# The reason for the back-and-forth switching from lists to MessageSet objects
-# is because M::I::MessageSet makes the effort to express the list of message
-# ids in optimal RFC2060 representation.
-#
-sub threaded_sequence_chunker {
-
-    my $all_msg_ids = shift;
-
-    show_error( 'Error processing sequences' ) unless $all_msg_ids;
-
-    my $message_count = scalar(@$all_msg_ids);
-
-    my $max = int( $message_count / $opts->{threads} );
-
-    my @cur_block;
-
-    my $msg_id_buckets  = {};
-    my $msg_set_buckets = {};
-
-    my $counter = 0;
-
-    while ( my @cur_block = splice @$all_msg_ids, 0, $max ) {
-
-        my $bucket_id = $counter % $opts->{threads};
-        my $cur_set = Mail::IMAPClient::MessageSet->new( @cur_block );
-        push @{$msg_set_buckets->{$bucket_id}}, $cur_set;
-        $counter++;
-
-    }
-
-    verbose( "Sequences: " . Dumper( $msg_set_buckets ) );
-
-    return $msg_set_buckets;
-
-} # }}}
-
-# {{{ stripper
-#
-# Oddly, the chomp function behaves in an unexpected way on subjects and other
-# headers returned from the imap server.  I know it's an issue of LF vs. CR, but
-# I still couldn't get it to behave cleanly, so I did it this way rather than
-# any chomp chop chomp monkey business...
-#
-sub stripper {
-
-    my $name  = shift;
-    my $field = shift;
-
-    return unless $name;
-    return unless $field;
-
-    $field =~ s/\n+//;
-    $field =~ s/\r+//;
-    $field =~ s/\R+//;
-    $field =~ s/^\s+//;
-    $field =~ s/\s+$//;
-
-    # Strip off the name of the envelope attribute
-    #
-    if ( $field =~ m/^$name:\s+(.*)$/ ) {
-        $field = $1;
-    }
-
-    # For from addresses, just grab the address.
-    #
-    if ( $name eq 'From' ) {
-        $field =~ m/[<](.*)[>]/;
-        $field = $1;
-    }
-
-    # For Dates, convert to epoch
-    #
-    if ( $name eq 'Date' ) {
-        my $epoch = convert_date_to_epoch( $field );
-        $field = $epoch;
-    }
-
-    # Strip off the subject cruft...
-    #
-    if ( $name eq 'Subject' ) {
-        $field =~ s/^Re:\s+//gi;
-        $field =~ s/^Fwd:\s+//gi;
-        $field =~ s/\s+Re:\s+//gi;
-        $field =~ s/\s+Fwd:\s+//gi;
-    }
-
-
-    if ( ! $field ) {
-        $field = ']]EMPTY[[';
-    }
-
-    return $field;
-
-} # }}}
-
-# {{{ break_fetch
-#
-# Yeah.  This doesn't work right.
-#
-sub break_fetch {
-
-    print "Will break after the current fetch...\n";
-    $break = 1;
-
-    return;
-
-} # }}}
-
-# {{{ generate_subject_search_string
-#
-# To display a helpful string you can cut and paste directly into the gmail
-# search pane to search for the reported message.
-#
-sub generate_subject_search_string {
-
-    my ( $folder, $date, $subject ) = @_;
-
-    my %folders = (
-                    'INBOX'             => 'in:inbox',
-                    '[Gmail]/Sent Mail' => 'is:sent',
-                    'Sent'              => 'is:sent',
-                    'Sent Items'        => 'is:sent',
-                    '[Gmail]/Spam'      => 'is:spam',
-                    '[Gmail]/Starred'   => 'is:starred',
-                    '[Gmail]/All Mail'  => 'in:anywhere',
-    );
-
-    my $label;
-
-    if ( defined $folders{$folder} ) {
-        $label = $folders{$folder};
-    } else {
-        $label = 'label:' . '"' . $folder . '"';
-    }
-
-    my $dm = Date::Manip::Date->new();
-
-    my ( $bdate, $adate );
-
-    my $aresult = $dm->parse($date);
-
-    if ( $aresult ) {
-        $bdate = '';
-        $adate = '';
-    } else {
-
-        my $parsed_adate = $dm->printf('%Y/%m/%d');
-        my $aepoch       = $dm->printf('%s');
-        my $bepoch       = $aepoch + ( 24 * 60 * 60 );
-        my $bresult      = $dm->parse("epoch $bepoch");
-        my $parsed_bdate = $dm->printf('%Y/%m/%d');
-
-        $adate = "after:$parsed_adate";
-        $bdate = "before:$parsed_bdate";
-
-    }
-
-    return
-        join( ' ',
-              "subject:\"$subject\"",
-              $adate,
-              $bdate,
-              $label );
-
-} # }}}
-
-# {{{ generate_search_string
-#
-# To display a helpful string you can cut and paste directly into the gmail
-# search pane to search for the reported message.
-#
-sub generate_search_string {
-
-    my $args = shift;
-
-
-    my $folder = $args->{folder};
-    my $date   = $args->{date};
-    my $header = $args->{header};
-    my $value  = $args->{value};
-
-    my %folders = (
-                    'INBOX'             => 'in:inbox',
-                    '[Gmail]/Sent Mail' => 'is:sent',
-                    'Sent'              => 'is:sent',
-                    'Sent Items'        => 'is:sent',
-                    '[Gmail]/Spam'      => 'is:spam',
-                    '[Gmail]/Starred'   => 'is:starred',
-                    '[Gmail]/All Mail'  => 'in:anywhere',
-    );
-
-    my $label;
-
-    if ( defined $folders{$folder} ) {
-        $label = $folders{$folder};
-    } else {
-        $label = 'label:' . '"' . $folder . '"';
-    }
-
-    my $dm = Date::Manip::Date->new();
-
-    my ( $bdate, $adate );
-
-    my $aresult = $dm->parse($date);
-
-    if ( $aresult ) {
-        $bdate = '';
-        $adate = '';
-    } else {
-
-        my $parsed_adate = $dm->printf('%Y/%m/%d');
-        my $aepoch       = $dm->printf('%s');
-        my $bepoch       = $aepoch + ( 24 * 60 * 60 );
-        my $bresult      = $dm->parse("epoch $bepoch");
-        my $parsed_bdate = $dm->printf('%Y/%m/%d');
-
-        $adate = "after:$parsed_adate";
-        $bdate = "before:$parsed_bdate";
-
-    }
-
-    return
-        join( ' ',
-              "$header:\"$value\"",
-              $adate,
-              $bdate,
-              $label );
 
 } # }}}
 
