@@ -276,6 +276,7 @@ $opts->{list}              = 0;
 $opts->{types}             = 0;
 $opts->{threads}           = 0;
 $opts->{use_threaded_mode} = 0;
+$opts->{threshold}         = 20;    # Message count threshold before flushing message cache
 
 GetOptions(
 
@@ -308,6 +309,7 @@ GetOptions(
         'force!',
         'debug!',
         'verbose!',
+        'threshold=i',
 
 );
 
@@ -342,7 +344,7 @@ my @valid_threads = ( 2, 3, 5, 7, 11, 13, 17 );
 if ( $opts->{threads} >= 2 && grep $opts->{threads} == $_, @valid_threads ) {
 
     if (
-        eval 
+        eval
             q[
                 require threads;
                 import threads ( 'exit' => 'threads_only' );
@@ -443,20 +445,21 @@ print "Using IMAP Server: "
 # Set our global imap options here, so we can append to them individually later
 # as needed.
 #
-my %imap_options = (
+my %global_imap_options = (
     Server           => $opts->{server},
     Port             => $opts->{port},
     User             => $opts->{user},
     Password         => $opts->{password},
     Keepalive        => $opts->{Keepalive},
     Fast_io          => $opts->{Fast_io},
-   #Ssl              => $opts->{Ssl},
     Reconnectretry   => $opts->{Reconnectretry},
     Maxcommandlength => $opts->{Maxcommandlength},
     Uid              => $opts->{Uid},
     Clear            => 100,
-
+    Buffer           => 16384,
 );
+
+my %imap_options = %global_imap_options;
 
 if ( $opts->{debug} ) {
 
@@ -473,9 +476,17 @@ if ( $opts->{debug} ) {
 
     # Do a quick imap login to make sure we have good credentials.
     #
-    my $imap_socket = create_ssl_socket( 'first_imap_connection_socket' );
+    my $imap_socket =
+        $opts->{Ssl}
+        ? create_ssl_socket( 'first_imap_connection_socket' )
+        : 0
+        ;
 
-    my $imap = Mail::IMAPClient->new( %imap_options, Socket => $imap_socket ) 
+    if ( $imap_socket ) {
+        $imap_options{Socket} = $imap_socket;
+    }
+
+    my $imap = Mail::IMAPClient->new(%imap_options)
         or die "Cannot connect to host : $@";
 
     if ( $imap->IsAuthenticated ) {
@@ -513,7 +524,7 @@ die_clean( 1, "No folders in fetched lists!" ) unless scalar(@imap_folders);
 #
 while (1) {
 
-    { 
+    {
 
         if ($use_threaded_mode) {
             $fetched_queue  = Thread::Queue->new();
@@ -669,148 +680,68 @@ sub biggest_messages_report {
 
     my @breport;
 
-    {
+    my $stime = time;
 
-        # Taking a more manual approach to socket creation and corresponding
-        # M::I object creation....
-        #
-        my $biggest_imap_socket = create_ssl_socket( 'biggest_imap_socket' );
+    my $fetch_count = fetch_messages({ folder => $folder,
+                                       cache  => $bmr_cache });
 
-        my $biggest_imap =
-            Mail::IMAPClient->new( %imap_options,
-                                   Socket => $biggest_imap_socket )
-            or die "Cannot connect to host : $@";
+    if ( ! $fetch_count ) {
 
-        $biggest_imap->examine( $folder );
+        push @breport, "\n\n** No messages on which to report for folder: $folder\n\n";
 
-        my $num = $biggest_imap->message_count;
+        return @breport;
 
-        print "Selected folder '$folder' contains $num messages\n\n";
+    }
 
-        print "\n\nFetching message details...\n";
+    my $fetched_messages = cache_report({ folder      => $folder, 
+                                          cache       => $bmr_cache,
+                                          report_type => 'report_by_size' });
 
-        my $skip_threads =
-            $num <= $opts->{threads}
-            ? 1
-            : 0
-            ;
+    ddump( 'fetched_messages', $fetched_messages ) if $opts->{debug};
 
-        my $stime = time;
+    my $ftime = time;
 
-        my $msgs_count =
-            $use_threaded_mode && ! $skip_threads
-            ? threaded_fetch_msgs({ cache => $bmr_cache, folder => $folder })
-            : fetch_msgs({ cache => $bmr_cache, folder => $folder })
-            ;
+    my $elapsed = $ftime - $stime;
 
-        my $fetched_messages = cache_report(
-            {   cache       => $bmr_cache,
-                report_type => 'report_by_size',
-                folder      => $folder,
-            }
-        );
+    push @breport, "\nTotal time to fetch all messages: $elapsed seconds\n";
+   #push @breport, 'Iterated ' . scalar( keys %$fetched_messages ) . " messages.\n";
+   #push @breport, '(Ignored messages smaller than ' . $opts->{min} . " bytes.)\n";
+    push @breport, "\nReporting on the top " . $opts->{top} . " messages.\n";
 
-        ddump( 'fetched_messages', $fetched_messages ) if $opts->{debug};
+    my $totalsize;
 
-        my $ftime = time;
+    # quick calculation on the total size of the messages so
+    # it can appear at the top of the report.
+    #
 
-        my $elapsed = $ftime - $stime;
+    #for ( keys %$fetched_messages ) {
+    #    $totalsize += $fetched_messages->{$_}->{$header_table{'Size'}};
+    #}
 
-        push @breport, "\nTotal time to fetch all messages: $elapsed seconds\n";
-       #push @breport, 'Iterated ' . scalar( keys %$fetched_messages ) . " messages.\n";
-        push @breport, '(Ignored messages smaller than ' . $opts->{min} . " bytes.)\n";
-        push @breport, "\nReporting on the top " . $opts->{top} . " messages.\n";
+    my @msglist;
 
-        my $totalsize;
+    my $reportsize;
 
-        # quick calculation on the total size of the messages so
-        # it can appear at the top of the report.
-        #
-
-        #for ( keys %$fetched_messages ) {
-        #    $totalsize += $fetched_messages->{$_}->{$header_table{'Size'}};
-        #}
-
-        my @msglist;
-
-        my $reportsize;
-
-        push @breport,
-            "\n\n\n"
-            . '-' x 60 . "\n\n"
-            . "All messages, sorted by size\n\n\n"
-            . "Date\t\t\t\tSize\t\tSubject\n"
-            . '-' x 60 . "\n\n";
+    push @breport,
+        "\n\n\n"
+        . "Top messages, sorted by size...\n"
+        . '-' x 60 . "\n\n"
+        . "Date\t\t\t\tSize\t\tSubject\n"
+        . '-' x 60 . "\n\n";
 
 
-        for ( @$fetched_messages ) {
+    for ( @$fetched_messages ) {
 
-            my $folder       = $_->[0];
-            my $msg_id       = $_->[1];
-            my $to_address   = $_->[2];
-            my $from_address = $_->[3];
-            my $date         = $_->[4];
-            my $subject      = $_->[5];
-            my $size         = $_->[6];
-
-
-            push @breport, "$date\t$size\t\t$subject\n";
-
-        }
+        my $folder       = $_->[0];
+        my $msg_id       = $_->[1];
+        my $to_address   = $_->[2];
+        my $from_address = $_->[3];
+        my $date         = $_->[4];
+        my $subject      = $_->[5];
+        my $size         = $_->[6];
 
 
-
-
-#   # If the counter never incremented, obviously no messages were larger than
-#   # our --min threshold.
-#   #
-#   if ( ! $counter ) {
-#       show_error(   'Error: No messages greater than minimum size ('
-#                   . $opts->{min}
-#                   . ' bytes) to report...' );
-#       next;
-#   } else {
-
-#       push @breport, "Size\t\tDate\t\t\t\tSubject\n";
-#       push @breport, '-' x 60 . "\n";
-
-#       for ( @msglist ) {
-#           push @breport,
-#               defined $_->[0] && $_->[0]
-#               ? $_->[0]
-#               : '',
-#               "\t\t",
-#               defined $_->[1] && $_->[1]
-#               ? $_->[1]
-#               : '',
-#               "\t",
-#               defined $_->[2] && $_->[2]
-#               ? $_->[2]
-#               : '',
-#               "\n"
-#               ;
-
-#           # Display the necessary search needed to cut and
-#           # paste into gmail directly to quickly find the
-#           # current message.
-#           #
-#           my $search =
-#               generate_subject_search_string( $folder, $_->[1], $_->[2] );
-
-#           push @breport, $search . "\n\n"
-#               if $opts->{server} eq 'imap.gmail.com';
-
-#       }
-
-#       push @breport, '-' x 60 . "\n";
-#       push @breport, "Total size of reported messages in folder '$folder': "
-#           . convert_bytes($reportsize) . "\n\n";
-
-#   }
-
-        $biggest_imap->disconnect;
-
-        $biggest_imap_socket->close( SSL_no_shutdown => 1, SSL_ctx_free => 1 );
+        push @breport, "$date\t$size\t\t$subject\n";
 
     }
 
@@ -1026,7 +957,7 @@ sub messages_by_header_report {
 
         my $mbhr_socket = create_ssl_socket( 'mbhr_socket' );
 
-        my $mbhr_imap = Mail::IMAPClient->new( %imap_options, Socket => $mbhr_socket ) 
+        my $mbhr_imap = Mail::IMAPClient->new( %imap_options, Socket => $mbhr_socket )
             or die "Cannot connect to host : $@";
 
         $num = $mbhr_imap->message_count;
@@ -1380,7 +1311,7 @@ sub folder_message_count_report {
 
         my $fmcr_socket = create_ssl_socket( 'fmcr_socket' );
 
-        my $fmcr_imap = Mail::IMAPClient->new( %imap_options, Socket => $fmcr_socket ) 
+        my $fmcr_imap = Mail::IMAPClient->new( %imap_options, Socket => $fmcr_socket )
             or die "Cannot connect to host : $@";
 
 
@@ -1588,6 +1519,843 @@ sub print_report {
 
 # }}}
 
+# {{{ IMAP operations
+
+# {{{ fetch_folders
+#
+# Expects to receive an anon hashref of arguments containing lists for filters
+# and excludes.
+#
+# Return an array of folders after filtering and validating.
+#
+sub fetch_folders {
+
+    my $args = shift;
+
+    my $filter_list   =
+        $args->{filters}
+        ? $args->{filters}
+        : []
+        ;
+
+    my $excludes_list =
+        $args->{excludes}
+        ? $args->{excludes}
+        : []
+        ;
+
+    my $ff_cache = $args->{cache};
+
+    my $list         = [];
+    my $menu_folders = [];
+
+    $list = check_cache({ cache => $ff_cache, content_type => 'folder_list' });
+
+    {
+
+        my $ff_socket = create_ssl_socket( 'ff_socket' );
+
+        my $ff_imap = Mail::IMAPClient->new( %imap_options, Socket => $ff_socket )
+            or die "Cannot connect to host : $@";
+
+
+        if ( ! $list ) {
+
+            $list = $ff_imap->folders
+                or die_clean( 1, "Error fetching folders: $!\n" . $ff_imap->LastError );
+
+            put_cache({ cache => $ff_cache, content_type => 'folder_list', values => $list });
+
+        }
+
+        print "Processing list of IMAP folders...\n";
+
+        # Here's where we filter out what we want from the list of folders.
+        #
+        my @filtered_list =
+                            grep { my $item = $_; not grep { $item =~ m/$_/i } @$excludes_list }
+            @$filter_list ? grep { my $item = $_;     grep { $item =~ m/$_/i } @$filter_list   } @$list : @$list;
+
+        # Run the exists method on the folder to compensate for the odd behavior
+        # that can come from using nested gmail labels.
+        #
+        my $max = scalar(@filtered_list);
+
+        die_clean( 1, "No folders..." ) unless $max;
+
+        my $bar = IMAP::Progress->new( max => $max, length => 10 );
+        my $counter= 1;
+
+        for my $ff ( @filtered_list ) {
+
+            if ( $opts->{force} || check_cache({ cache => $ff_cache, content_type => 'validated_folder_list', value => $ff }) ) {
+
+                # The force option is allowed to short circuit
+                # the imap->exists method...
+                #
+                push @$menu_folders, $ff;
+
+            } else {
+
+                if ( $ff_imap->exists($ff) ) {
+
+                    $bar->info( "Sent: " . $ff_imap->Transaction . " STATUS \"$ff\"" );
+
+                    push @$menu_folders, $ff;
+                    put_cache({ cache => $ff_cache, content_type => 'validated_folder_list', folder => $ff });
+
+                } else {
+
+                    $bar->info('');
+
+                }
+
+            }
+
+            $bar->update( $counter++ );
+            $bar->write;
+
+        }
+
+        $ff_imap->disconnect;
+
+        $ff_socket->close( SSL_no_shutdown => 1, SSL_ctx_free => 1 );
+
+    }
+
+    return @$menu_folders;
+
+} # }}}
+
+# {{{ fetch_messages
+#
+# Expects to receive a list of items representing the message attributes we want
+# to fetch.
+#
+# Returns a hashref of message id's as the keys, and the values for each key are
+# hashrefs of the message attributes on which we want to report.
+#
+sub fetch_messages {
+
+    my $args = shift;
+
+    my $folder  = $args->{folder};
+    my $f_cache = $args->{cache};
+
+    return unless $folder;
+    return unless $f_cache;
+
+    my @headers;
+
+    # TODO
+    #
+    # Fix this header handling...
+    #
+    push @headers, $header_table{$_} for qw/Date Subject Size To From/;
+
+
+    # Taking a more manual approach to socket creation and corresponding M::I
+    # object creation....
+    #
+    my $f_imap_socket =
+        $opts->{Ssl}
+        ? create_ssl_socket( 'f_imap_socket' )
+        : 0
+        ;
+
+    if ( $f_imap_socket ) {
+        $imap_options{Socket} = $f_imap_socket;
+    }
+
+    my $f_imap = Mail::IMAPClient->new(%imap_options)
+        or die "Cannot connect to host : $@";
+
+    $f_imap->examine( $folder );
+
+    my $num = $f_imap->message_count;
+
+    my $skip_threads =
+        $num <= $opts->{threads}
+        ? 1
+        : 0
+        ;
+
+    print "\n\nServer says selected folder '$folder' contains $num messages\n\n";
+
+    my $cached_count = check_cache({ cache => $f_cache, content_type => 'fetched_messages', value => $folder });
+
+    # Compare the count of cached messages against the actual number of messages
+    # in the imap mailbox folder.  If the difference is less than our threshold,
+    # don't bother with the imap fetch operation.
+    #
+    if ( $cached_count && abs( $cached_count - $num ) <= $opts->{threshold} ) {
+
+        print "Found $cached_count cached messages\n";
+        return $cached_count;
+
+    }
+
+    print "Updating cache for folder '$folder'\n";
+
+    my $fetched = {};
+
+    if ( $f_imap->Folder() ) {
+
+        # This object will hold our message ids.
+        #
+        my $msgset = Mail::IMAPClient::MessageSet->new( $f_imap->messages );
+
+        my $msg_ids = [];
+
+        if ( $msgset ) {
+            $msg_ids = $msgset->unfold;
+        }
+
+        my $msg_count = scalar(@$msg_ids);
+
+        # Return empty handed if the imap server shows there are no messages in
+        # the folder.
+        #
+        return unless $msg_count;
+
+        if ( $use_threaded_mode && ! $skip_threads ) {
+
+            $fetched = threaded_fetch_msgs({ cache => $f_cache, folder => $folder, msgs_in_imap_folder => $num });
+
+        } else {
+
+           #fetch_msgs({ cache => $f_cache, folder => $folder, msgs_in_imap_folder => $num })
+
+            $fetched = $f_imap->fetch_hash( $msg_ids, @headers );
+
+
+            my $max = ( scalar( keys %$fetched ) );
+
+            my $sbar = IMAP::Progress->new( max    => $max,
+                                            length => 10 );
+
+            print "\n\n";
+
+            my $scounter = 0;
+
+            $sbar->text('Processing headers:');
+
+            # Ugly.
+            #
+            # Iterate the whole list of fetched messages and fix each value returned.
+            #
+            for my $cur_id ( keys %$fetched ) {
+
+                for my $cur_header (@headers) {
+
+                    $fetched->{$cur_id}->{$cur_header} =
+                        stripper( $header_table{$cur_header},
+                                $fetched->{$cur_id}->{$cur_header} );
+
+                    $fetched->{$cur_id}->{$cur_header} = '[EmptyValue]' unless $fetched->{$cur_id}->{$cur_header};
+
+                }
+
+                $sbar->update( ++$scounter );
+                $sbar->write;
+
+            }
+
+        }
+
+
+    } else {
+
+        die_clean( 1, "Error checking current folder selection: $! " . $f_imap->LastError );
+
+    }
+
+
+    # Store our results in the cache then return the results.
+    #
+    print "Storing messages in cache...\n";
+
+    put_cache({ cache => $f_cache, content_type => 'fetched_messages', folder => $folder, values => $fetched });
+
+    $f_imap->disconnect;
+
+    $f_imap_socket->close( SSL_no_shutdown => 1, SSL_ctx_free => 1 );
+
+    return $num;
+
+
+} # }}}
+
+# {{{ fetch_msgs
+#
+# Expects to receive a list of items representing the message attributes we want
+# to fetch.
+#
+# Returns a hashref of message id's as the keys, and the values for each key are
+# hashrefs of the message attributes on which we want to report.
+#
+sub fetch_msgs {
+
+#_  my $args = shift;
+
+#_  my $folder              = $args->{folder};
+#_  my $fm_cache            = $args->{cache};
+#_  my $msgs_in_imap_folder = $args->{msgs_in_imap_folder};
+
+#_  my @headers;
+
+#_  push @headers, $header_table{$_} for qw/Date Subject Size To From/;
+
+    # This will hold the entire result of fetching operations.
+    #
+#_  my $fetcher = {};
+
+#_  $fetcher = check_cache({ cache => $fm_cache, content_type => 'fetched_messages', value => $folder });
+
+#_  return $fetcher if $fetcher;
+
+#_  my $fm_socket = create_ssl_socket( 'fm_socket' );
+
+#_  my $fm_imap = Mail::IMAPClient->new( %imap_options, Socket => $fm_socket )
+#_      or die "Cannot connect to host : $@";
+
+
+    # Quick sanity check to see if the chosen folder really exists, not all that
+    # necessary because the folder list is well validated at the beginning of
+    # the script, but, just to be safe in case anything was modified during the
+    # runtime of this script...
+    #
+#_  if ( ! $fm_imap->exists($folder) ) {
+#_      show_error( "Error: $folder not a valid folder: $@\nLastError: " . $fm_imap->LastError );
+#_      return ( 0, 0 );
+#_  }
+
+#_  $fm_imap->examine($folder)
+#_      or show_error( "Error selecting $folder: $@\n" );
+
+
+    # One more quick sanity check to make sure we really are in a folder and
+    # that folder is in a select (examine) state.
+    #
+#_  if ( $fm_imap->Folder() ) {
+
+#_      my $msg_count = $fm_imap->message_count;
+
+        # Return empty handed if there are no messages in the folder.
+        #
+#_      return unless $msg_count;
+
+        # Take the list of message id's and break them up into smaller chunks in
+        # the form of an array of MessageSet objects.
+        #
+#_      my @sequences = $fm_imap->messages;
+
+        # Trying to come up with a way of trapping a Ctrl-C to gracefully finish
+        # the current iteration and finish producing the report.  It doesn't
+        # work very well.
+        #
+        #$SIG{'INT'} = 'break_fetch';
+
+#_      print "Fetching $msgs_in_imap_folder messages...\n";
+
+       #$fetcher = $fm_imap->fetch_hash( \@sequences, @headers );
+
+        # Set the break function back to what it was.
+        #
+        #$SIG{'INT'} = 'die_signal';
+
+#_  } else {
+#_      my $error = $fm_imap->LastError;
+#_      $fm_imap->disconnect;
+#_      $fm_socket->close( SSL_no_shutdown => 1, SSL_ctx_free => 1 );
+#_      die_clean( 1, "Error checking current folder selection: $! " . $error );
+#_  }
+
+#_  my $max = ( scalar( keys %$fetcher ) );
+
+#_  my $sbar = IMAP::Progress->new( max    => $max,
+#_                                  length => 10 );
+
+#_  print "\n\n";
+
+#_  $sbar->text('Processing headers:');
+
+#_  my $scounter = 0;
+
+    # Ugly.
+    #
+    # Iterate the whole list of fetched messages and fix each value returned.
+    #
+#_  for my $cur_id ( keys %$fetcher ) {
+
+#_      for my $cur_header (@headers) {
+
+#_          $fetcher->{$cur_id}->{$cur_header} =
+#_              stripper( $header_table{$cur_header},
+#_                        $fetcher->{$cur_id}->{$cur_header} );
+
+#_          $fetcher->{$cur_id}->{$cur_header} = '[EmptyValue]' unless $fetcher->{$cur_id}->{$cur_header};
+
+#_      }
+
+#_      $sbar->update( ++$scounter );
+#_      $sbar->write;
+
+#_  }
+
+#_  put_cache({ cache => $fm_cache, content_type => 'fetched_messages', folder => $folder, values => $fetcher });
+
+#_  return $fetcher;
+
+} # }}}
+
+# {{{ threaded_fetch_msgs
+#
+# Expects to receive a list of items representing the message attributes we want
+# to fetch.
+#
+# Returns a hashref of message id's as the keys, and the values for each key are
+# hashrefs of the message attributes on which we want to report.
+#
+sub threaded_fetch_msgs {
+
+    my $args = shift;
+
+    my $folder       = $args->{folder};
+    my $tfm_cache    = $args->{cache};
+    my $imap_msg_ids = $args->{msg_ids};
+
+    my $imap_msg_count = scalar(@$imap_msg_ids);
+
+    return unless $folder;
+    return unless $tfm_cache;
+
+#_  my $msgs_in_imap_folder =
+#_      defined $args->{msgs_in_imap_folder}
+#_      ? $args->{msgs_in_imap_folder}
+#_      : 0
+#_      ;
+
+#_  my @headers;
+
+    # TODO
+    #
+    # Fix this header handling...
+    #
+#_  push @headers, $header_table{$_} for qw/Date Subject Size To From/;
+
+#_  my $cached_count = check_cache({ cache => $tfm_cache, content_type => 'fetched_messages', value => $folder });
+
+#_  # If we have cached messages just return the count of them
+#_  #
+#_  if ( $cached_count
+#_      && abs( $cached_count - $msgs_in_imap_folder ) <= $opts->{threshold} )
+#_  {
+
+#_      print "Found $cached_count cached messages\n";
+#_      return $cached_count;
+
+#_  }
+#_  else {
+
+#_      print "Cache contains no messages for folder $folder\n";
+
+#_  }
+
+    my $fetcher = {};
+
+    # One more quick sanity check to make sure we really are in a folder and
+    # that folder is in a select (examine) state.
+    #
+#_  if ( $tfm_imap->Folder() ) {
+
+        # This object will hold our message ids.
+        #
+#_      my $msgset = Mail::IMAPClient::MessageSet->new( $tfm_imap->messages );
+
+#_      my $msg_ids = [];
+
+#_      if ( $msgset ) {
+#_          $msg_ids = $msgset->unfold;
+#_      }
+
+#_      my $msg_count = scalar(@$msg_ids);
+
+        # Return empty handed if there are no messages in the folder.
+        #
+#_      return unless $msg_count;
+
+        # Take the list of message id's and break them up into smaller chunks in
+        # the form of an array of MessageSet objects.
+        #
+        my $threaded_sequences = threaded_sequence_chunker( $imap_msg_ids );
+
+        # Trying to come up with a way of trapping a Ctrl-C to gracefully finish
+        # the current iteration and finish producing the report.  It doesn't
+        # work very well.
+        #
+        #$SIG{'INT'} = 'break_fetch';
+
+        my $threads = [];
+
+        # Each thread will stuff stats in the global progress_queue object.
+        # Spawn this thread which will keep watching the queue and computing
+        # stats.
+        #
+        {
+
+            print "\nInitiating fetcher threads: ";
+
+            for my $cur_bucket ( sort keys %$threaded_sequences ) {
+
+                print "$cur_bucket ";
+
+                {
+
+                    $threads->[$cur_bucket] = threads->create(
+
+                        # Set thread behavior explicitly
+                        #
+                        { 'context' => 'void',
+                          'exit'    => 'thread_only' },
+
+                        \&imap_thread,
+
+                            # Params to pass to our thread function.
+                            #
+                            $folder,
+                            $cur_bucket,
+                            $threaded_sequences->{$cur_bucket}
+
+                    );
+
+                    print "Detaching thread: $cur_bucket\n" if $opts->{verbose};
+
+                    $threads->[$cur_bucket]->detach();
+
+                }
+
+            }
+
+            print "\n\n";
+
+            # I suspected Term::Menus might be mucking with output buffering...
+            #
+            $|=1;
+
+            my $tcounter = 0;
+
+            my $tbar = IMAP::Progress->new(
+                max           => $imap_msg_count,
+                length        => 10,
+                show_rotation => 1
+            );
+
+            $tbar->text( '0 threads complete' );
+            $tbar->info( 'Fetch time: 0 seconds' );
+            $tbar->update( ++$tcounter );
+            my $total_fetched = 0;
+            my $start_time = time;
+
+
+            # Before proceding, wait for each thread to finish collecting
+            # messages by checking the fetcher status queue.
+            #
+            print "\nWaiting for threads to complete...\n";
+
+           #my $idle_tag = $tfm_imap->idle;
+
+            while ( 1 ) {
+
+                sleep 1;
+
+                my $statuses;
+
+                {
+                    lock($fetcher_status);
+                    $statuses = $fetcher_status->pending();
+                }
+
+                last if $statuses == $opts->{threads};
+
+                {
+                    lock( $fetched_queue );
+                    $total_fetched = $fetched_queue->pending();
+                }
+
+                my $cur_time = time;
+                my $elapsed_time = convert_seconds( $cur_time - $start_time );
+
+                $tbar->text( "$statuses threads complete" );
+                $tbar->info( "Elapsed time: $elapsed_time" );
+                $tbar->update( $total_fetched );
+                $tbar->write;
+
+                $tcounter++;
+
+               #$imap->noop
+               #    or warn 'Noop error: ' . $imap->LastError . "\n";
+
+
+            }
+
+           #$tfm_imap->done($idle_tag);
+
+        }
+
+        print "\n\nThreads complete...\n\n";
+
+        print "Processing fetched messages from threads...\n";
+
+        my %from_fetched_queue;
+
+        # Now we that the threads have completed, iterate the values in our
+        # fetched messages queue and merge them into the big fetcher hashref.
+        #
+        {
+
+
+            lock($fetched_queue);
+
+            my $pending = $fetched_queue->pending();
+
+            print "\n\nTotal messages pending for processing: $pending\n\n";
+
+            %from_fetched_queue = $fetched_queue->extract( 0, $pending );
+
+
+        }
+
+#       @{$fetcher}{ keys %from_fetched_queue } = values %from_fetched_queue;
+
+        print "\nMessage fetching complete...\n";
+
+        return \%from_fetched_queue;
+
+        # Set the break function back to what it was.
+        #
+        #$SIG{'INT'} = 'die_signal';
+
+#_  } else {
+#_      die_clean( 1, "Error checking current folder selection: $! " . $tfm_imap->LastError );
+#_  }
+
+#_  my $max = ( scalar(keys %$fetcher) );
+
+#_  print "\n\n\n\n";
+
+
+#_  $tfm_imap->disconnect;
+#_  $tfm_socket->close( SSL_no_shutdown => 1, SSL_ctx_free => 1 );
+
+#_  # Store our results in the cache then return the results.
+#_  #
+#_  print "Storing messages in cache...\n";
+
+#_  put_cache({ cache => $tfm_cache, content_type => 'fetched_messages', folder => $folder, values => $fetcher });
+
+#_  return $max;
+
+} # }}}
+
+# {{{ imap_thread
+#
+# Expects to receive the folder name, current thread id, and the
+# Mail::IMAPClient::MessageSet object.
+#
+# Returns nothing, simply adds the results to the thread-safe queue.
+#
+sub imap_thread {
+
+    # Each thread gets an appropriate list of M::I::MessageSet objects
+    #
+    my $folder       = shift;
+    my $cur_bucket   = shift;
+    my $msg_set_list = shift;
+
+    my @headers;
+
+    # TODO
+    #
+    # Fix this header handling...
+    #
+    push @headers, $header_table{$_} for qw/Date Subject Size To From/;
+
+    my %imap_options = %global_imap_options;
+
+    if ( $opts->{debug} ) {
+
+        open( CURDBG, '>>' . $opts->{log} . ".$cur_bucket" )
+            or die_clean( 1, "Unable to open debuglog $cur_bucket: $!\n" );
+
+        $imap_options{Debug}    = $opts->{debug} . '.' . $cur_bucket;
+        $imap_options{Debug_fh} = *CURDBG;
+
+    }
+
+    {
+
+        my $imap_thread_socket =
+            $opts->{Ssl}
+            ? create_ssl_socket( 'Socket for thread: ' . $cur_bucket )
+            : 0
+            ;
+
+        if ( $imap_thread_socket ) {
+            $imap_options{Socket} = $imap_thread_socket;
+        }
+
+        # Each thread gets its own imap object...
+        #
+        my $imap_thread = Mail::IMAPClient->new(%imap_options)
+            or die "Cannot connect to host : $@";
+
+        # Reselect the folder so this thread is in the right place.  No validation
+        # or exists check necessary at this stage.
+        #
+        if ( ! $imap_thread->examine($folder) ) {
+
+            warn "Error selecting folder $folder in thread $cur_bucket: $@\n";
+
+            # Stick a message on the status queue that we're done.
+            #
+            {
+                lock($fetcher_status);
+                $fetcher_status->enqueue( 'error' );
+            }
+
+            last;
+        }
+
+        my $msg_set_object = shift( @$msg_set_list );
+
+        my @cur_msg_id_list = $msg_set_object->unfold;
+
+        my $cur_fetcher = $imap_thread->fetch_hash( \@cur_msg_id_list, @headers);
+
+        {
+            lock( $fetched_queue );
+
+            for my $m_id ( keys %$cur_fetcher ) {
+
+                next unless $m_id;
+
+                # Iterate the list of fetched messages and fix each value returned.
+                # The header information has some issues like CRLF and such.
+                #
+                for my $cur_header (@headers) {
+
+                    $cur_fetcher->{$m_id}->{$cur_header} =
+                        stripper( $header_table{$cur_header},
+                                $cur_fetcher->{$m_id}->{$cur_header} );
+
+                    $cur_fetcher->{$m_id}->{$cur_header} = '[EmptyValue]'
+                        unless $cur_fetcher->{$m_id}->{$cur_header};
+
+                }
+
+                $fetched_queue->enqueue( $m_id => $cur_fetcher->{$m_id} );
+
+            }
+
+        }
+
+        my $rc = $imap_thread->_imap_command( "LOGOUT", "BYE" );
+
+        #ddump( 'response code from LOGOUT', $rc );
+
+        sleep 3;
+
+        # Stick a message on the status queue that we're done.
+        #
+        {
+            lock($fetcher_status);
+            $fetcher_status->enqueue( 'complete' );
+        }
+
+
+        # This thread is done, tear down the imap connection.
+        #
+        $imap_thread->disconnect;
+        $imap_thread_socket->close( SSL_no_shutdown => 1, SSL_ctx_free => 1 );
+
+    }
+
+} # }}}
+
+# {{{ get_folder_size
+#
+# TODO
+#
+# Simplify this mess.
+#
+sub get_folder_size {
+
+    my $args = shift;
+
+    my $folder    = $args->{folder};
+    my $gfs_cache = $args->{cache};
+
+    print "\n\nFetching message details for folder '$folder'...\n\n";
+
+    my $msgs =
+        $use_threaded_mode
+        ? threaded_fetch_msgs({ cache => $gfs_cache, folder => $folder })
+        : fetch_msgs({ cache => $gfs_cache, folder => $folder })
+        ;
+
+    return ( 0, 0 ) unless scalar( keys %$msgs );
+
+    my $totalsize;
+
+    my $counter = 0;
+
+    for ( keys %$msgs ) {
+        $totalsize += $msgs->{$_}->{$header_table{'Size'}};
+        $counter++;
+    }
+
+    ddump( 'msgs', $msgs ) if $opts->{debug};
+
+    if ( ! $counter ) {
+        show_error( "Error: No messages to report for '$folder'..." );
+        return ( 0, 0 );
+    }
+
+    return ( $totalsize, $counter );
+
+} # }}}
+
+# {{{ create_ssl_socket
+#
+sub create_ssl_socket {
+
+    my $description = shift;
+
+    my $s = IO::Socket::SSL->new(
+        Proto                   => 'tcp',
+        PeerAddr                => $opts->{server},
+        PeerPort                => $opts->{port},
+        SSL_create_ctx_callback => sub { my $ctx = shift;
+                                        ddump( 'ssl_ctx', $ctx );
+                                        ddump( 'ssl_ctx_callback_description', $description );
+                                        Net::SSLeay::CTX_sess_set_cache_size( $ctx, 128 ); },
+    );
+
+    select ($s);
+    $| = 1;
+    select (STDOUT);
+    $| = 1;
+
+    $s->verify_hostname( $opts->{server},'imap' )
+        or warn "Error running verify_hostname: $!\n";
+
+    return $s;
+
+} # }}}
+
+# }}}
+
 # {{{ Message processing
 
 # {{{ threaded_sequence_chunker
@@ -1668,6 +2436,9 @@ sub stripper {
     if ( $name eq 'From' or $name eq 'To' ) {
         $field =~ m/[<](.*)[>]/;
         $field = $1;
+
+        $field = lc($field);
+
     }
 
     # For Dates, convert to epoch
@@ -1997,7 +2768,7 @@ sub folder_choice {
     $fc_imap->examine($choice)
         or show_error( "Error: Error selecting folder: ${choice}...\n" . $fc_imap->LastError );
 
-    print "\n\n Folder selected: $choice\n";
+    print "\n\n Folder selected: '$choice'\n\n\n";
 
     $fc_imap->disconnect;
     $fc_socket->close( SSL_no_shutdown => 1, SSL_ctx_free => 1 );
@@ -2048,715 +2819,6 @@ sub show_folder_picker {
 
     return $choice;
 
-
-} # }}}
-
-# }}}
-
-# {{{ IMAP operations
-
-# {{{ fetch_folders
-#
-# Expects to receive an anon hashref of arguments containing lists for filters
-# and excludes.
-#
-# Return an array of folders after filtering and validating.
-#
-sub fetch_folders {
-
-    my $args = shift;
-
-    my $filter_list   =
-        $args->{filters}
-        ? $args->{filters}
-        : []
-        ;
-
-    my $excludes_list =
-        $args->{excludes}
-        ? $args->{excludes}
-        : []
-        ;
-
-    my $ff_cache = $args->{cache};
-
-    my $list         = [];
-    my $menu_folders = [];
-
-    $list = check_cache({ cache => $ff_cache, content_type => 'folder_list' });
-
-    {
-
-        my $ff_socket = create_ssl_socket( 'ff_socket' );
-
-        my $ff_imap = Mail::IMAPClient->new( %imap_options, Socket => $ff_socket ) 
-            or die "Cannot connect to host : $@";
-
-
-        if ( ! $list ) {
-
-            $list = $ff_imap->folders
-                or die_clean( 1, "Error fetching folders: $!\n" . $ff_imap->LastError );
-
-            put_cache({ cache => $ff_cache, content_type => 'folder_list', values => $list });
-
-        }
-
-        print "Processing list of IMAP folders...\n";
-
-        # Here's where we filter out what we want from the list of folders.
-        #
-        my @filtered_list =
-                            grep { my $item = $_; not grep { $item =~ m/$_/i } @$excludes_list }
-            @$filter_list ? grep { my $item = $_;     grep { $item =~ m/$_/i } @$filter_list   } @$list : @$list;
-
-        # Run the exists method on the folder to compensate for the odd behavior
-        # that can come from using nested gmail labels.
-        #
-        my $max = scalar(@filtered_list);
-
-        die_clean( 1, "No folders..." ) unless $max;
-
-        my $bar = IMAP::Progress->new( max => $max, length => 10 );
-        my $counter= 1;
-
-        for my $ff ( @filtered_list ) {
-
-            if ( $opts->{force} || check_cache({ cache => $ff_cache, content_type => 'validated_folder_list', value => $ff }) ) {
-
-                # The force option is allowed to short circuit
-                # the imap->exists method...
-                #
-                push @$menu_folders, $ff;
-
-            } else {
-
-                if ( $ff_imap->exists($ff) ) {
-
-                    $bar->info( "Sent: " . $ff_imap->Transaction . " STATUS \"$ff\"" );
-
-                    push @$menu_folders, $ff;
-                    put_cache({ cache => $ff_cache, content_type => 'validated_folder_list', folder => $ff });
-
-                } else {
-
-                    $bar->info('');
-
-                }
-
-            }
-
-            $bar->update( $counter++ );
-            $bar->write;
-
-        }
-
-        $ff_imap->disconnect;
-
-        $ff_socket->close( SSL_no_shutdown => 1, SSL_ctx_free => 1 );
-
-    }
-
-    return @$menu_folders;
-
-} # }}}
-
-# {{{ fetch_msgs
-#
-# Expects to receive a list of items representing the message attributes we want
-# to fetch.
-#
-# Returns a hashref of message id's as the keys, and the values for each key are
-# hashrefs of the message attributes on which we want to report.
-#
-sub fetch_msgs {
-
-    my $args = shift;
-
-    my $folder   = $args->{folder};
-    my $fm_cache = $args->{cache};
-
-    my @headers;
-
-    push @headers, $header_table{$_} for qw/Date Subject Size To From/;
-
-    # This will hold the entire result of fetching operations.
-    #
-    my $fetcher = {};
-
-    $fetcher = check_cache({ cache => $fm_cache, content_type => 'fetched_messages', value => $folder });
-
-    return $fetcher if $fetcher;
-
-    my $fm_socket = create_ssl_socket( 'fm_socket' );
-
-    my $fm_imap = Mail::IMAPClient->new( %imap_options, Socket => $fm_socket ) 
-        or die "Cannot connect to host : $@";
-
-
-    # Quick sanity check to see if the chosen folder really exists, not all that
-    # necessary because the folder list is well validated at the beginning of
-    # the script, but, just to be safe in case anything was modified during the
-    # runtime of this script...
-    #
-    if ( ! $fm_imap->exists($folder) ) {
-        show_error( "Error: $folder not a valid folder: $@\nLastError: " . $fm_imap->LastError );
-        return ( 0, 0 );
-    }
-
-    $fm_imap->examine($folder)
-        or show_error( "Error selecting $folder: $@\n" );
-
-
-    # One more quick sanity check to make sure we really are in a folder and
-    # that folder is in a select (examine) state.
-    #
-    if ( $fm_imap->Folder() ) {
-
-        my $msg_count = $fm_imap->message_count;
-
-        # Return empty handed if there are no messages in the folder.
-        #
-        return unless $msg_count;
-
-        # Take the list of message id's and break them up into smaller chunks in
-        # the form of an array of MessageSet objects.
-        #
-        my @sequences = $fm_imap->messages;
-
-        # Trying to come up with a way of trapping a Ctrl-C to gracefully finish
-        # the current iteration and finish producing the report.  It doesn't
-        # work very well.
-        #
-        #$SIG{'INT'} = 'break_fetch';
-
-        print "Fetching $msg_count messages...\n";
-
-        $fetcher = $fm_imap->fetch_hash( \@sequences, @headers );
-
-        # Set the break function back to what it was.
-        #
-        #$SIG{'INT'} = 'die_signal';
-
-    } else {
-        my $error = $fm_imap->LastError;
-        $fm_imap->disconnect;
-        $fm_socket->close( SSL_no_shutdown => 1, SSL_ctx_free => 1 );
-        die_clean( 1, "Error checking current folder selection: $! " . $error );
-    }
-
-    my $max = ( scalar( keys %$fetcher ) );
-
-    my $sbar = IMAP::Progress->new( max    => $max,
-                                    length => 10 );
-
-    print "\n\n";
-
-    $sbar->text('Processing headers:');
-
-    my $scounter = 0;
-
-    # Ugly.
-    #
-    # Iterate the whole list of fetched messages and fix each value returned.
-    #
-    for my $cur_id ( keys %$fetcher ) {
-
-        for my $cur_header (@headers) {
-
-            $fetcher->{$cur_id}->{$cur_header} =
-                stripper( $header_table{$cur_header},
-                          $fetcher->{$cur_id}->{$cur_header} );
-
-            $fetcher->{$cur_id}->{$cur_header} = '[EmptyValue]' unless $fetcher->{$cur_id}->{$cur_header};
-
-        }
-
-        $sbar->update( ++$scounter );
-        $sbar->write;
-
-    }
-
-    put_cache({ cache => $fm_cache, content_type => 'fetched_messages', folder => $folder, values => $fetcher });
-
-    return $fetcher;
-
-} # }}}
-
-# {{{ threaded_fetch_msgs
-#
-# Expects to receive a list of items representing the message attributes we want
-# to fetch.
-#
-# Returns a hashref of message id's as the keys, and the values for each key are
-# hashrefs of the message attributes on which we want to report.
-#
-sub threaded_fetch_msgs {
-
-    my $args = shift;
-
-    my $folder    = $args->{folder};
-    my $tfm_cache = $args->{cache};
-
-    my @headers;
-
-    # TODO
-    #
-    # Fix this header handling...
-    #
-    push @headers, $header_table{$_} for qw/Date Subject Size To From/;
-
-    my $cached_count = check_cache({ cache => $tfm_cache, content_type => 'fetched_messages', value => $folder });
-
-    if ( $cached_count ) {
-        print "Found $cached_count cached messages\n";
-        return $cached_count;
-    } else {
-        warn "Cache contains no messages for folder $folder\n";
-    }
-
-    # Quick sanity check to see if the chosen folder really exists, not all that
-    # necessary because the folder list is well validated at the beginning of
-    # the script, but, just to be safe in case anything was modified during the
-    # runtime of this script...
-    #
-
-    my $tfm_socket = create_ssl_socket( 'tfm_socket' );
-
-    my $tfm_imap = Mail::IMAPClient->new( %imap_options, Socket => $tfm_socket ) 
-        or die "Cannot connect to host : $@";
-
-    if ( ! $tfm_imap->exists($folder) ) {
-        show_error( "Error: $folder not a valid folder: $@\nLastError: " . $tfm_imap->LastError );
-        return ( 0, 0 );
-    }
-
-    $tfm_imap->examine($folder)
-        or show_error( "Error selecting $folder: $@\n" );
-
-
-    my $fetcher = {};
-
-    # One more quick sanity check to make sure we really are in a folder and
-    # that folder is in a select (examine) state.
-    #
-    if ( $tfm_imap->Folder() ) {
-
-        # This object will hold our message ids.
-        #
-        my $msgset = Mail::IMAPClient::MessageSet->new( $tfm_imap->messages );
-
-        my $msg_ids = [];
-
-        if ( $msgset ) {
-            $msg_ids = $msgset->unfold;
-        }
-
-        my $msg_count = scalar(@$msg_ids);
-
-        # Return empty handed if there are no messages in the folder.
-        #
-        return unless $msg_count;
-
-        # Take the list of message id's and break them up into smaller chunks in
-        # the form of an array of MessageSet objects.
-        #
-        my $threaded_sequences = threaded_sequence_chunker( $msg_ids );
-
-        # Trying to come up with a way of trapping a Ctrl-C to gracefully finish
-        # the current iteration and finish producing the report.  It doesn't
-        # work very well.
-        #
-        #$SIG{'INT'} = 'break_fetch';
-
-        my $threads = [];
-
-        # Each thread will stuff stats in the global progress_queue object.
-        # Spawn this thread which will keep watching the queue and computing
-        # stats.
-        #
-        {
-
-            print "\nInitiating fetcher threads: ";
-
-            for my $cur_bucket ( sort keys %$threaded_sequences ) {
-
-                print "$cur_bucket ";
-
-                {
-
-                    $threads->[$cur_bucket] = threads->create(
-
-                        # Set thread behavior explicitly
-                        #
-                        { 'context' => 'void',
-                          'exit'    => 'thread_only' },
-
-                        \&imap_thread,
-
-                            # Params to pass to our thread function.
-                            #
-                            $folder,
-                            $cur_bucket,
-                            $threaded_sequences->{$cur_bucket}
-
-                    );
-
-                    print "Detaching thread: $cur_bucket\n" if $opts->{verbose};
-
-                    $threads->[$cur_bucket]->detach();
-
-                }
-
-            }
-
-            print "\n\n";
-
-            # I suspected Term::Menus might be mucking with output buffering...
-            #
-            $|=1;
-
-            my $tcounter = 0;
-
-            my $tbar = IMAP::Progress->new(
-                max           => $msg_count,
-                length        => 10,
-                show_rotation => 1
-            );
-
-            $tbar->text( '0 threads complete' );
-            $tbar->info( 'Fetch time: 0 seconds' );
-            $tbar->update( ++$tcounter );
-            my $total_fetched = 0;
-            my $start_time = time;
-
-
-            # Before proceding, wait for each thread to finish collecting
-            # messages by checking the fetcher status queue.
-            #
-            print "\nWaiting for threads to complete...\n";
-
-            my $idle_tag = $tfm_imap->idle;
-
-            while ( 1 ) {
-
-                sleep 1;
-
-                my $statuses;
-
-                {
-                    lock($fetcher_status);
-                    $statuses = $fetcher_status->pending();
-                }
-            
-                last if $statuses == $opts->{threads};
-
-                { 
-                    lock( $fetched_queue );
-                    $total_fetched = $fetched_queue->pending();
-                }
-
-                my $cur_time = time;
-                my $elapsed_time = convert_seconds( $cur_time - $start_time );
-
-                $tbar->text( "$statuses threads complete" );
-                $tbar->info( "Elapsed time: $elapsed_time" );
-                $tbar->update( $total_fetched );
-                $tbar->write;
-
-                $tcounter++;
-
-               #$imap->noop
-               #    or warn 'Noop error: ' . $imap->LastError . "\n";
-
-
-            }
-
-            $tfm_imap->done($idle_tag);
-
-        }
-
-        print "\n\nThreads complete...\n\n";
-
-
-        # Now we that the threads have completed, iterate the values in our
-        # fetched messages queue and merge them into the big fetcher hashref.
-        #
-        {
-
-            print "Processing fetched messages from threads...\n";
-
-            lock($fetched_queue);
-
-            my $pending = $fetched_queue->pending();
-
-            print "\n\nTotal messages pending for processing: $pending\n\n";
-
-            my %from_fetched_queue = $fetched_queue->extract( 0, $pending );
-
-            @{$fetcher}{ keys %from_fetched_queue } = values %from_fetched_queue;
-
-            print "\nProcessing complete...\n";
-
-
-        }
-
-        # Set the break function back to what it was.
-        #
-        #$SIG{'INT'} = 'die_signal';
-
-    } else {
-        die_clean( 1, "Error checking current folder selection: $! " . $tfm_imap->LastError );
-    }
-
-    my $max = ( scalar(keys %$fetcher) );
-
-#   my $sbar = IMAP::Progress->new( max => $max, length => 10 );
-
-    print "\n\n\n\n";
-
-
-#   my $scounter = 0;
-
-#   $sbar->text('Processing headers:');
-#   $sbar->update($scounter);
-#   $sbar->write;
-
-#   # Ugly.
-#   #
-#   # Iterate the whole list of fetched messages and fix each value returned.
-#   # The header information has some issues like CRLF and such.
-#   #
-#    print "Fixing message headers...\n\n";
-#
-#    for my $cur_id ( keys %$fetcher ) {
-#
-#        for my $cur_header (@headers) {
-#
-#            $fetcher->{$cur_id}->{$cur_header} =
-#                stripper( $header_table{$cur_header},
-#                          $fetcher->{$cur_id}->{$cur_header} );
-#
-#
-#            $fetcher->{$cur_id}->{$cur_header} = '[EmptyValue]'
-#                unless $fetcher->{$cur_id}->{$cur_header};
-#
-#        }
-#
-#        # Keep the counter from updating too frequently...
-#       #
-#       if ( ( ( $scounter % 10 ) + 1 )  == 10 ) {
-#           $sbar->update( $scounter++ );
-#           $sbar->write;
-#       }
-
-#   }
-
-    $tfm_imap->disconnect;
-    $tfm_socket->close( SSL_no_shutdown => 1, SSL_ctx_free => 1 );
-
-    # Store our results in the cache then return the results.
-    #
-    print "Storing messages in cache...\n";
-
-    put_cache({ cache => $tfm_cache, content_type => 'fetched_messages', folder => $folder, values => $fetcher });
-
-    return $max;
-
-} # }}}
-
-# {{{ imap_thread
-#
-# Expects to receive the folder name, current thread id, and the
-# Mail::IMAPClient::MessageSet object.
-#
-# Returns nothing, simply adds the results to the thread-safe queue.
-#
-sub imap_thread {
-
-    # Each thread gets an appropriate list of M::I::MessageSet objects
-    #
-    my $folder       = shift;
-    my $cur_bucket   = shift;
-    my $msg_set_list = shift;
-
-    my @headers;
-
-    # TODO
-    #
-    # Fix this header handling...
-    #
-    push @headers, $header_table{$_} for qw/Date Subject Size To From/;
-
-   #open( CURDBG, '>>' . $opts->{log} . ".$cur_bucket" )
-   #    or die_clean( 1, "Unable to open debuglog $cur_bucket: $!\n" );
-
-    {
-
-        my $imap_thread_socket = create_ssl_socket( 'Socket for thread: ' . $cur_bucket );
-
-        # Each thread gets its own imap object...
-        #
-        my $imap_thread  = Mail::IMAPClient->new(
-                    Server           => $opts->{server},
-                    Port             => $opts->{port},
-                    User             => $opts->{user},
-                    Password         => $opts->{password},
-                    Keepalive        => $opts->{Keepalive},
-                    Fast_io          => $opts->{Fast_io},
-                   #Ssl              => $opts->{Ssl},
-                    Maxcommandlength => $opts->{Maxcommandlength},
-                    Reconnectretry   => $opts->{Reconnectretry},
-                    Uid              => 0,
-                    Clear            => 100,
-                    Buffer           => 16384,
-                   #Debug            => 1,
-                   #Debug_fh         => *CURDBG,
-                    Socket           => $imap_thread_socket,
-
-        ) or die "Cannot connect to host : $@";
-
-        # Reselect the folder so this thread is in the right place.  No validation
-        # or exists check necessary at this stage.
-        #
-        if ( ! $imap_thread->examine($folder) ) {
-
-            warn "Error selecting folder $folder in thread $cur_bucket: $@\n";
-
-            # Stick a message on the status queue that we're done.
-            #
-            {
-                lock($fetcher_status);
-                $fetcher_status->enqueue( 'error' );
-            }
-
-            last;
-        }
-
-        my $msg_set_object = shift( @$msg_set_list );
-
-        my @cur_msg_id_list = $msg_set_object->unfold;
-
-        my $cur_fetcher = $imap_thread->fetch_hash( \@cur_msg_id_list, @headers);
-
-        {
-            lock( $fetched_queue );
-
-            for my $m_id ( keys %$cur_fetcher ) {
-
-                next unless $m_id;
-
-                # Iterate the list of fetched messages and fix each value returned.
-                # The header information has some issues like CRLF and such.
-                # 
-                for my $cur_header (@headers) {
-
-                    $cur_fetcher->{$m_id}->{$cur_header} =
-                        stripper( $header_table{$cur_header},
-                                $cur_fetcher->{$m_id}->{$cur_header} );
-
-                    $cur_fetcher->{$m_id}->{$cur_header} = '[EmptyValue]'
-                        unless $cur_fetcher->{$m_id}->{$cur_header};
-
-                }
-
-                $fetched_queue->enqueue( $m_id => $cur_fetcher->{$m_id} );
-
-            }
-
-        }
-
-        my $rc = $imap_thread->_imap_command( "LOGOUT", "BYE" );
-
-        #ddump( 'response code from LOGOUT', $rc );
-
-        sleep 3;
-
-        # Stick a message on the status queue that we're done.
-        #
-        {
-            lock($fetcher_status);
-            $fetcher_status->enqueue( 'complete' );
-        }
-
-
-        # This thread is done, tear down the imap connection.
-        #
-        $imap_thread->disconnect;
-        $imap_thread_socket->close( SSL_no_shutdown => 1, SSL_ctx_free => 1 );
-
-    }
-
-} # }}}
-
-# {{{ get_folder_size
-#
-# TODO
-#
-# Simplify this mess.
-#
-sub get_folder_size {
-
-    my $args = shift;
-
-    my $folder    = $args->{folder};
-    my $gfs_cache = $args->{cache};
-
-    print "\n\nFetching message details for folder '$folder'...\n\n";
-
-    my $msgs =
-        $use_threaded_mode
-        ? threaded_fetch_msgs({ cache => $gfs_cache, folder => $folder })
-        : fetch_msgs({ cache => $gfs_cache, folder => $folder })
-        ;
-
-    return ( 0, 0 ) unless scalar( keys %$msgs );
-
-    my $totalsize;
-
-    my $counter = 0;
-
-    for ( keys %$msgs ) {
-        $totalsize += $msgs->{$_}->{$header_table{'Size'}};
-        $counter++;
-    }
-
-    ddump( 'msgs', $msgs ) if $opts->{debug};
-
-    if ( ! $counter ) {
-        show_error( "Error: No messages to report for '$folder'..." );
-        return ( 0, 0 );
-    }
-
-    return ( $totalsize, $counter );
-
-} # }}}
-
-# {{{ create_ssl_socket
-#
-sub create_ssl_socket {
-
-    my $description = shift;
-
-    my $s = IO::Socket::SSL->new(
-        Proto                   => 'tcp',
-        PeerAddr                => $opts->{server},
-        PeerPort                => $opts->{port},
-        SSL_create_ctx_callback => sub { my $ctx = shift;
-                                        ddump( 'ssl_ctx', $ctx );
-                                        ddump( 'ssl_ctx_callback_description', $description );
-                                        Net::SSLeay::CTX_sess_set_cache_size( $ctx, 128 ); },
-    );
-
-    select ($s);
-    $| = 1;
-    select (STDOUT);
-    $| = 1;
-
-    $s->verify_hostname( $opts->{server},'imap' )
-        or warn "Error running verify_hostname: $!\n";
-
-    return $s;
 
 } # }}}
 
@@ -2850,7 +2912,7 @@ sub init_cache {
 
 # {{{ cache_report
 #
-# Here's where we're going to start generating our reports.  
+# Here's where we're going to start generating our reports.
 #
 # Expects to receive an anon hashref contain the cache (dbh) object, type of
 # report we want to run, the name of the folder, and the header to be used for
@@ -2884,7 +2946,6 @@ sub cache_report {
             WHERE
                 server = ?
                 AND folder = ?
-                AND size >= ?
             ORDER BY size DESC
             LIMIT ?
         ];
@@ -2895,7 +2956,6 @@ sub cache_report {
                                       {},
                                       $opts->{server},
                                       $folder,
-                                      $opts->{min},
                                       $opts->{top}
                                     )
             };
@@ -3245,7 +3305,7 @@ sub check_cache {
         return 0 unless $count->[0];
         return $count->[0];
 
-        
+
        #my $sql = q[
        #    SELECT
        #        msg_id,
@@ -3750,15 +3810,13 @@ sub die_clean {
 
     close DBG;
 
-    #print $obj->as_string;
-
     print "\n$msg\n";
 
     if ( $err ) {
-        print "Exiting with status: $err\n";
+        verbose( "Exiting with status: $err" );
         exit $err;
     } else {
-        print "Exiting with clean status...\n";
+        verbose( "Exiting with clean status." );
         exit;
     }
 
@@ -3837,7 +3895,10 @@ sub verbose {
 sub enter {
 
     print "\nPress [Enter] to continue: ";
-    <>;
+
+    chomp( my $input = <> );
+
+    return $input;
 
 }
 
