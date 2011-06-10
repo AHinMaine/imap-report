@@ -263,10 +263,11 @@ $opts->{log}               = '/tmp/imap-report.debuglog';
 $opts->{top}               = 10;      # default for top 10 style reports
 $opts->{min}               = 100_000; # default minimum size in bytes
 $opts->{Maxcommandlength}  = 1_000;   # Number of messages in a single fetch operation
-$opts->{Keepalive}         = 1;
+$opts->{Keepalive}         = 0;
 $opts->{Fast_io}           = 1;
 $opts->{Reconnectretry}    = 3;
 $opts->{Ssl}               = 1;
+$opts->{Uid}               = 0;
 $opts->{cache_file}        = "$ENV{HOME}/.imap-report.cache";
 $opts->{cache_age}         = 24 * 60 * 60;
 $opts->{conf}              = "$ENV{HOME}/.imapreportrc";
@@ -298,6 +299,7 @@ GetOptions(
         'Maxcommandlength=i',
         'Reconnectretry=i',
         'Ssl!',
+        'Uid!',
         'cache_file=s',
         'cache_age=i',
         'threads=i',
@@ -362,11 +364,15 @@ if ( $opts->{threads} >= 2 && grep $opts->{threads} == $_, @valid_threads ) {
     }
 }
 
+# Date::Manip is now mandatory...
+#
 unless ( eval 'require Date::Manip; import Date::Manip::Date; 1;' ) {
     print "Date::Manip module needed...\n";
 }
 
 
+# Prompt for user/passwd if necessary
+#
 if ( ! defined $opts->{user} && ! $opts->{user} ) {
     $opts->{user} = user_prompt();
 }
@@ -434,11 +440,6 @@ print "Using IMAP Server: "
     . "Connecting...\n"
     ;
 
-if ( $opts->{debug} ) {
-    open( DBG, '>>' . $opts->{log} )
-        or die_clean( 1, "Unable to open debuglog: $!\n" );
-}
-
 # Set our global imap options here, so we can append to them individually later
 # as needed.
 #
@@ -452,17 +453,25 @@ my %imap_options = (
    #Ssl              => $opts->{Ssl},
     Reconnectretry   => $opts->{Reconnectretry},
     Maxcommandlength => $opts->{Maxcommandlength},
-    Uid              => 0,
+    Uid              => $opts->{Uid},
     Clear            => 100,
-   #Debug            => $opts->{debug} . '.main',
-   #Debug_fh         => *DBG,
 
 );
+
+if ( $opts->{debug} ) {
+
+    open( DBG, '>>' . $opts->{log} )
+        or die_clean( 1, "Unable to open debuglog: $!\n" );
+
+    $imap_options{Debug}    = $opts->{debug} . '.main';
+    $imap_options{Debug_fh} = *DBG;
+
+}
 
 
 {
 
-    # Do a quick login to make sure we have good credentials.
+    # Do a quick imap login to make sure we have good credentials.
     #
     my $imap_socket = create_ssl_socket( 'first_imap_connection_socket' );
 
@@ -481,15 +490,22 @@ my %imap_options = (
 
 }
 
+# Some global queues used in threaded fetching mode...
+#
 our ( $progress_queue, $fetched_queue, $fetcher_status, $sequence_queue );
 
 my $reports = report_types();
 
-# Prepare our cache (a db handle)
+# Prepare our cache (becomes a db handle)
 #
 my $cache = init_cache( $opts->{cache_file} );
 
-my @imap_folders = fetch_folders({ cache => $cache, filters => $opts->{filters}, excludes => $opts->{exclude} });
+my @imap_folders = fetch_folders(
+    {   cache    => $cache,
+        filters  => $opts->{filters},
+        excludes => $opts->{exclude}
+    }
+);
 
 die_clean( 1, "No folders in fetched lists!" ) unless scalar(@imap_folders);
 
@@ -499,7 +515,7 @@ while (1) {
 
     { 
 
-        if ( $use_threaded_mode ) {
+        if ($use_threaded_mode) {
             $fetched_queue  = Thread::Queue->new();
             $fetcher_status = Thread::Queue->new();
             $progress_queue = Thread::Queue->new();
@@ -514,12 +530,13 @@ while (1) {
             .  '(Number of folders in list: ' . scalar(@imap_folders) . ")\n\n\n"
             . "Choose your report type: \n\n\n";
 
+
         # Choose what type of report we want to run.
         #
         my $action = $opts->{report}
             ? $reports->{$opts->{report}}
             : choose_action({ banner  => $banner,
-                            reports => $reports });
+                              reports => $reports });
 
         die_clean( 0, 'Quitting...' ) if $action eq ']quit[';
 
@@ -592,6 +609,8 @@ while (1) {
 # {{{ subs
 #
 
+# {{{ Report generators
+
 # {{{ report_types
 #
 sub report_types {
@@ -629,6 +648,10 @@ sub list_folders {
 # the largest messages in a folder.  It disregards any
 # messages below our 'min' size.
 #
+# Expects to receive a cache object.
+#
+# Returns a report in the form of an array
+#
 sub biggest_messages_report {
 
     my $args = shift;
@@ -637,94 +660,103 @@ sub biggest_messages_report {
 
     my $report_type = $reports->{biggest_messages_report};
 
+    # Now that we know what type of report to run, we need to choose the folder
+    # on which we wish to report.
+    #
     my $folder = folder_choice({ folders => \@imap_folders, report_type => $report_type });
 
     return unless $folder;
 
-    my $biggest_imap_socket = create_ssl_socket( 'biggest_imap_socket' );
-
-    my $biggest_imap = Mail::IMAPClient->new( %imap_options, Socket => $biggest_imap_socket ) 
-        or die "Cannot connect to host : $@";
-
-    $biggest_imap->examine( $folder );
-
-    my $num = $biggest_imap->message_count;
-
-    print "Selected folder '$folder' contains $num messages\n\n";
-
-    print "\n\nFetching message details...\n";
-
-    my $skip_threads =
-        $num <= $opts->{threads}
-        ? 1
-        : 0
-        ;
-
-    my $stime = time;
-
-    my $msgs_count =
-        $use_threaded_mode && ! $skip_threads
-        ? threaded_fetch_msgs({ cache => $bmr_cache, folder => $folder })
-        : fetch_msgs({ cache => $bmr_cache, folder => $folder })
-        ;
-
-    my $fetched_messages = cache_report(
-        {   cache       => $bmr_cache,
-            report_type => 'report_by_size',
-            folder      => $folder,
-        }
-    );
-
-    ddump( 'fetched_messages', $fetched_messages ) if $opts->{debug};
-
-    my $ftime = time;
-
-    my $elapsed = $ftime - $stime;
-
     my @breport;
 
-    push @breport, "\nTotal time to fetch all messages: $elapsed seconds\n";
-   #push @breport, 'Iterated ' . scalar( keys %$fetched_messages ) . " messages.\n";
-    push @breport, '(Ignored messages smaller than ' . $opts->{min} . " bytes.)\n";
-    push @breport, "\nReporting on the top " . $opts->{top} . " messages.\n";
+    {
 
-    my $totalsize;
+        # Taking a more manual approach to socket creation and corresponding
+        # M::I object creation....
+        #
+        my $biggest_imap_socket = create_ssl_socket( 'biggest_imap_socket' );
 
-    # quick calculation on the total size of the messages so
-    # it can appear at the top of the report.
-    #
-   #for ( keys %$fetched_messages ) {
-   #    $totalsize += $fetched_messages->{$_}->{$header_table{'Size'}};
-   #}
+        my $biggest_imap =
+            Mail::IMAPClient->new( %imap_options,
+                                   Socket => $biggest_imap_socket )
+            or die "Cannot connect to host : $@";
 
-    #push @breport, 'Total folder size: ' . convert_bytes($totalsize) . "\n\n\n";
+        $biggest_imap->examine( $folder );
 
-    my @msglist;
+        my $num = $biggest_imap->message_count;
 
-    my $reportsize;
+        print "Selected folder '$folder' contains $num messages\n\n";
 
-    push @breport,
-          "\n\n\n"
-        . '-' x 60 . "\n\n"
-        . "All messages, sorted by size\n\n\n"
-        . "Date\t\t\t\tSize\t\tSubject\n"
-        . '-' x 60 . "\n\n";
+        print "\n\nFetching message details...\n";
+
+        my $skip_threads =
+            $num <= $opts->{threads}
+            ? 1
+            : 0
+            ;
+
+        my $stime = time;
+
+        my $msgs_count =
+            $use_threaded_mode && ! $skip_threads
+            ? threaded_fetch_msgs({ cache => $bmr_cache, folder => $folder })
+            : fetch_msgs({ cache => $bmr_cache, folder => $folder })
+            ;
+
+        my $fetched_messages = cache_report(
+            {   cache       => $bmr_cache,
+                report_type => 'report_by_size',
+                folder      => $folder,
+            }
+        );
+
+        ddump( 'fetched_messages', $fetched_messages ) if $opts->{debug};
+
+        my $ftime = time;
+
+        my $elapsed = $ftime - $stime;
+
+        push @breport, "\nTotal time to fetch all messages: $elapsed seconds\n";
+       #push @breport, 'Iterated ' . scalar( keys %$fetched_messages ) . " messages.\n";
+        push @breport, '(Ignored messages smaller than ' . $opts->{min} . " bytes.)\n";
+        push @breport, "\nReporting on the top " . $opts->{top} . " messages.\n";
+
+        my $totalsize;
+
+        # quick calculation on the total size of the messages so
+        # it can appear at the top of the report.
+        #
+
+        #for ( keys %$fetched_messages ) {
+        #    $totalsize += $fetched_messages->{$_}->{$header_table{'Size'}};
+        #}
+
+        my @msglist;
+
+        my $reportsize;
+
+        push @breport,
+            "\n\n\n"
+            . '-' x 60 . "\n\n"
+            . "All messages, sorted by size\n\n\n"
+            . "Date\t\t\t\tSize\t\tSubject\n"
+            . '-' x 60 . "\n\n";
 
 
-    for ( @$fetched_messages ) {
+        for ( @$fetched_messages ) {
 
-        my $folder       = $_->[0];
-        my $msg_id       = $_->[1];
-        my $to_address   = $_->[2];
-        my $from_address = $_->[3];
-        my $date         = $_->[4];
-        my $subject      = $_->[5];
-        my $size         = $_->[6];
+            my $folder       = $_->[0];
+            my $msg_id       = $_->[1];
+            my $to_address   = $_->[2];
+            my $from_address = $_->[3];
+            my $date         = $_->[4];
+            my $subject      = $_->[5];
+            my $size         = $_->[6];
 
 
-        push @breport, "$date\t$size\t\t$subject\n";
+            push @breport, "$date\t$size\t\t$subject\n";
 
-    }
+        }
 
 
 
@@ -776,9 +808,11 @@ sub biggest_messages_report {
 
 #   }
 
-    $biggest_imap->disconnect;
+        $biggest_imap->disconnect;
 
-    $biggest_imap_socket->close( SSL_no_shutdown => 1, SSL_ctx_free => 1 );
+        $biggest_imap_socket->close( SSL_no_shutdown => 1, SSL_ctx_free => 1 );
+
+    }
 
     return @breport;
 
@@ -1499,6 +1533,126 @@ sub folder_message_sizes_report {
 
 } # }}}
 
+# {{{ show_report_types
+#
+sub show_report_types {
+
+my $types = report_types();
+
+print "\n\nType                                 Description\n"
+    . '-' x 75
+    . "\n";
+
+for ( sort { $types->{$a} cmp $types->{$b} } keys %$types ) {
+
+# pretty print the types of reports...
+#
+format STDOUT =
+@<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<  @*
+$_, $types->{$_}
+.
+write;
+}
+
+die_clean( 0, '' );
+
+} # }}}
+
+# {{{ print_report
+#
+# Display our report.  Put in its own function because I
+# intend to complicate this later.
+#
+# TODO
+#
+# Better pager handling.
+#
+sub print_report {
+
+    my $report = shift;
+
+    my $file = "$ENV{HOME}/imap-report.txt";
+    open ( RPT, ">" . $file )
+        or die_clean( 1, "Unable to write report.\n" );
+
+    print RPT $_ for @$report;
+    close RPT;
+
+    #system( "less -niSRX $file" );
+    system( "cat $file" );
+
+    die_clean( 0, "Quitting" )
+        if $opts->{list};
+
+} # }}}
+
+# }}}
+
+# {{{ Converters
+
+# {{{ convert_date_to_epoch
+#
+sub convert_date_to_epoch {
+
+    my $date = shift;
+
+    my $dm = Date::Manip::Date->new();
+
+    $dm->parse($date);
+    my $epoch = $dm->printf('%s');
+
+    return $epoch
+        ? $epoch
+        : 0;
+
+}    # }}}
+
+# {{{ sub convert_bytes
+#
+# For pretty printing byte numbers.
+#
+sub convert_bytes {
+
+    my $bytes = shift;
+
+    return unless $bytes;
+
+    my $KB = $bytes / 1024;
+
+    return sprintf( '%.1fKB', $KB )               if $KB < 1000;
+    return sprintf( '%.1fMB', $KB / 1024 )        if $KB < 1000000;
+    return sprintf( '%.1fGB', $KB / 1024 / 1024 ) if $KB < 100000000;
+
+} # }}}
+
+# {{{ sub convert_seconds
+#
+# For pretty printing the number of seconds.
+#
+sub convert_seconds {
+
+    my $seconds = shift;
+
+    return unless $seconds;
+
+    my $days  = int( $seconds / ( 24 * 60 * 60 ) );
+    my $hours = ( $seconds / ( 60 * 60 ) ) % 24;
+    my $mins  = ( $seconds / 60 ) % 60;
+    my $secs  = $seconds % 60;
+
+    my $days_string  = $days  ? "$days days " : '';
+    my $hours_string = $hours ? sprintf( '%02d', $hours ) . ' hours '   : '';
+    my $mins_string  = $mins  ? sprintf( '%02d', $mins  ) . ' minutes ' : '';
+    my $secs_string  = $secs  ? sprintf( '%02d', $secs  ) . ' seconds ' : '';
+
+    return join( '', $days_string, $hours_string, $mins_string, $secs_string );
+
+} # }}}
+
+# }}}
+
+# {{{ Menuing
+
 # {{{ choose_action
 #
 # Expects to receive a string to use as the banner to display at the top of the
@@ -1652,6 +1806,10 @@ sub show_folder_picker {
 
 
 } # }}}
+
+# }}}
+
+# {{{ IMAP operations
 
 # {{{ fetch_folders
 #
@@ -2186,8 +2344,8 @@ sub imap_thread {
     #
     push @headers, $header_table{$_} for qw/Date Subject Size To From/;
 
-    open( CURDBG, '>>' . $opts->{log} . ".$cur_bucket" )
-        or die_clean( 1, "Unable to open debuglog $cur_bucket: $!\n" );
+   #open( CURDBG, '>>' . $opts->{log} . ".$cur_bucket" )
+   #    or die_clean( 1, "Unable to open debuglog $cur_bucket: $!\n" );
 
     {
 
@@ -2200,18 +2358,16 @@ sub imap_thread {
                     Port             => $opts->{port},
                     User             => $opts->{user},
                     Password         => $opts->{password},
-                   #Keepalive        => $opts->{Keepalive},
-                    Keepalive        => 0,
-                   #Fast_io          => $opts->{Fast_io},
-                    Fast_io          => 1,
+                    Keepalive        => $opts->{Keepalive},
+                    Fast_io          => $opts->{Fast_io},
                    #Ssl              => $opts->{Ssl},
                     Maxcommandlength => $opts->{Maxcommandlength},
                     Reconnectretry   => $opts->{Reconnectretry},
                     Uid              => 0,
                     Clear            => 100,
-                    Debug            => 1,
                     Buffer           => 16384,
-                    Debug_fh         => *CURDBG,
+                   #Debug            => 1,
+                   #Debug_fh         => *CURDBG,
                     Socket           => $imap_thread_socket,
 
         ) or die "Cannot connect to host : $@";
@@ -2220,6 +2376,7 @@ sub imap_thread {
         # or exists check necessary at this stage.
         #
         if ( ! $imap_thread->examine($folder) ) {
+
             warn "Error selecting folder $folder in thread $cur_bucket: $@\n";
 
             # Stick a message on the status queue that we're done.
@@ -2330,6 +2487,38 @@ sub get_folder_size {
     return ( $totalsize, $counter );
 
 } # }}}
+
+# {{{ create_ssl_socket
+#
+sub create_ssl_socket {
+
+    my $description = shift;
+
+    my $s = IO::Socket::SSL->new(
+        Proto                   => 'tcp',
+        PeerAddr                => $opts->{server},
+        PeerPort                => $opts->{port},
+        SSL_create_ctx_callback => sub { my $ctx = shift;
+                                        ddump( 'ssl_ctx', $ctx );
+                                        ddump( 'ssl_ctx_callback_description', $description );
+                                        Net::SSLeay::CTX_sess_set_cache_size( $ctx, 128 ); },
+    );
+
+    select ($s);
+    $| = 1;
+    select (STDOUT);
+    $| = 1;
+
+    $s->verify_hostname( $opts->{server},'imap' )
+        or warn "Error running verify_hostname: $!\n";
+
+    return $s;
+
+} # }}}
+
+# }}}
+
+# {{{ Cache operations
 
 # {{{  init_cache
 #
@@ -3021,6 +3210,8 @@ sub put_cache {
 
         my $sth = $dbh->prepare($sql);
 
+        my $in_time = time;
+
         for ( keys %$values ) {
             my $result = $sth->execute(
                 $opts->{server},
@@ -3031,7 +3222,7 @@ sub put_cache {
                 $values->{$_}->{ $header_table{Subject} },
                 convert_date_to_epoch( $values->{$_}->{ $header_table{Date} } ),
                 $values->{$_}->{ $header_table{Size} },
-                time
+                $in_time
             );
 
             if ( $dbh->errstr ) {
@@ -3056,6 +3247,254 @@ sub put_cache {
     return;
 
 } # }}}
+
+# }}}
+
+# {{{ Message processing
+
+# {{{ threaded_sequence_chunker
+#
+# This is where we take our big list of message id's and split it into chunks.
+# Expects to receive one param, a Mail::IMAPClient::MessageSet object containing
+# our message id's.
+#
+# Returns an array of M::I::MessageSet objects, carefully sorted into different
+# buckets so that no threads will be attempting to fetch the same messages.
+# Divides the number of messages evenly between our number threads.
+#
+# The reason for the back-and-forth switching from lists to MessageSet objects
+# is because M::I::MessageSet makes the effort to express the list of message
+# ids in optimal RFC2060 representation.
+#
+sub threaded_sequence_chunker {
+
+    my $all_msg_ids = shift;
+
+    show_error( 'Error processing sequences' ) unless $all_msg_ids;
+
+    my $message_count = scalar(@$all_msg_ids);
+
+    my $max = int( $message_count / $opts->{threads} );
+
+    my @cur_block;
+
+    my $msg_id_buckets  = {};
+    my $msg_set_buckets = {};
+
+    my $counter = 0;
+
+    while ( my @cur_block = splice @$all_msg_ids, 0, $max ) {
+
+        my $bucket_id = $counter % $opts->{threads};
+        my $cur_set = Mail::IMAPClient::MessageSet->new( @cur_block );
+        push @{$msg_set_buckets->{$bucket_id}}, $cur_set;
+        $counter++;
+
+    }
+
+    verbose( "Sequences: " . Dumper( $msg_set_buckets ) );
+
+    return $msg_set_buckets;
+
+} # }}}
+
+# {{{ stripper
+#
+# Oddly, the chomp function behaves in an unexpected way on subjects and other
+# headers returned from the imap server.  I know it's an issue of LF vs. CR, but
+# I still couldn't get it to behave cleanly, so I did it this way rather than
+# any chomp chop chomp monkey business...
+#
+sub stripper {
+
+    my $name  = shift;
+    my $field = shift;
+
+    return unless $name;
+    return unless $field;
+
+    $field =~ s/\n+//;
+    $field =~ s/\r+//;
+    $field =~ s/\R+//;
+    $field =~ s/^\s+//;
+    $field =~ s/\s+$//;
+
+    # Strip off the name of the envelope attribute
+    #
+    if ( $field =~ m/^$name:\s+(.*)$/ ) {
+        $field = $1;
+    }
+
+    # For from addresses, just grab the address.
+    #
+    if ( $name eq 'From' ) {
+        $field =~ m/[<](.*)[>]/;
+        $field = $1;
+    }
+
+    # For Dates, convert to epoch
+    #
+    if ( $name eq 'Date' ) {
+        my $epoch = convert_date_to_epoch( $field );
+        $field = $epoch;
+    }
+
+    # Strip off the subject cruft...
+    #
+    if ( $name eq 'Subject' ) {
+        $field =~ s/^Re:\s+//gi;
+        $field =~ s/^Fwd:\s+//gi;
+        $field =~ s/\s+Re:\s+//gi;
+        $field =~ s/\s+Fwd:\s+//gi;
+    }
+
+
+    if ( ! $field ) {
+        $field = ']]EMPTY[[';
+    }
+
+    return $field;
+
+} # }}}
+
+# {{{ break_fetch
+#
+# Yeah.  This doesn't work right.
+#
+sub break_fetch {
+
+    print "Will break after the current fetch...\n";
+    $break = 1;
+
+    return;
+
+} # }}}
+
+# {{{ generate_subject_search_string
+#
+# To display a helpful string you can cut and paste directly into the gmail
+# search pane to search for the reported message.
+#
+sub generate_subject_search_string {
+
+    my ( $folder, $date, $subject ) = @_;
+
+    my %folders = (
+                    'INBOX'             => 'in:inbox',
+                    '[Gmail]/Sent Mail' => 'is:sent',
+                    'Sent'              => 'is:sent',
+                    'Sent Items'        => 'is:sent',
+                    '[Gmail]/Spam'      => 'is:spam',
+                    '[Gmail]/Starred'   => 'is:starred',
+                    '[Gmail]/All Mail'  => 'in:anywhere',
+    );
+
+    my $label;
+
+    if ( defined $folders{$folder} ) {
+        $label = $folders{$folder};
+    } else {
+        $label = 'label:' . '"' . $folder . '"';
+    }
+
+    my $dm = Date::Manip::Date->new();
+
+    my ( $bdate, $adate );
+
+    my $aresult = $dm->parse($date);
+
+    if ( $aresult ) {
+        $bdate = '';
+        $adate = '';
+    } else {
+
+        my $parsed_adate = $dm->printf('%Y/%m/%d');
+        my $aepoch       = $dm->printf('%s');
+        my $bepoch       = $aepoch + ( 24 * 60 * 60 );
+        my $bresult      = $dm->parse("epoch $bepoch");
+        my $parsed_bdate = $dm->printf('%Y/%m/%d');
+
+        $adate = "after:$parsed_adate";
+        $bdate = "before:$parsed_bdate";
+
+    }
+
+    return
+        join( ' ',
+              "subject:\"$subject\"",
+              $adate,
+              $bdate,
+              $label );
+
+} # }}}
+
+# {{{ generate_search_string
+#
+# To display a helpful string you can cut and paste directly into the gmail
+# search pane to search for the reported message.
+#
+sub generate_search_string {
+
+    my $args = shift;
+
+
+    my $folder = $args->{folder};
+    my $date   = $args->{date};
+    my $header = $args->{header};
+    my $value  = $args->{value};
+
+    my %folders = (
+                    'INBOX'             => 'in:inbox',
+                    '[Gmail]/Sent Mail' => 'is:sent',
+                    'Sent'              => 'is:sent',
+                    'Sent Items'        => 'is:sent',
+                    '[Gmail]/Spam'      => 'is:spam',
+                    '[Gmail]/Starred'   => 'is:starred',
+                    '[Gmail]/All Mail'  => 'in:anywhere',
+    );
+
+    my $label;
+
+    if ( defined $folders{$folder} ) {
+        $label = $folders{$folder};
+    } else {
+        $label = 'label:' . '"' . $folder . '"';
+    }
+
+    my $dm = Date::Manip::Date->new();
+
+    my ( $bdate, $adate );
+
+    my $aresult = $dm->parse($date);
+
+    if ( $aresult ) {
+        $bdate = '';
+        $adate = '';
+    } else {
+
+        my $parsed_adate = $dm->printf('%Y/%m/%d');
+        my $aepoch       = $dm->printf('%s');
+        my $bepoch       = $aepoch + ( 24 * 60 * 60 );
+        my $bresult      = $dm->parse("epoch $bepoch");
+        my $parsed_bdate = $dm->printf('%Y/%m/%d');
+
+        $adate = "after:$parsed_adate";
+        $bdate = "before:$parsed_bdate";
+
+    }
+
+    return
+        join( ' ',
+              "$header:\"$value\"",
+              $adate,
+              $bdate,
+              $label );
+
+} # }}}
+
+# }}}
+
+# {{{ Progress info
 
 # {{{ threaded_progress_bar
 #
@@ -3206,128 +3645,9 @@ sub estimate_completion_time {
 
 } # }}}
 
-# {{{ threaded_sequence_chunker
-#
-# This is where we take our big list of message id's and split it into chunks.
-# Expects to receive one param, a Mail::IMAPClient::MessageSet object containing
-# our message id's.
-#
-# Returns an array of M::I::MessageSet objects, carefully sorted into different
-# buckets so that no threads will be attempting to fetch the same messages.
-# Divides the number of messages evenly between our number threads.
-#
-# The reason for the back-and-forth switching from lists to MessageSet objects
-# is because M::I::MessageSet makes the effort to express the list of message
-# ids in optimal RFC2060 representation.
-#
-sub threaded_sequence_chunker {
+# }}}
 
-    my $all_msg_ids = shift;
-
-    show_error( 'Error processing sequences' ) unless $all_msg_ids;
-
-    my $message_count = scalar(@$all_msg_ids);
-
-    my $max = int( $message_count / $opts->{threads} );
-
-    my @cur_block;
-
-    my $msg_id_buckets  = {};
-    my $msg_set_buckets = {};
-
-    my $counter = 0;
-
-    while ( my @cur_block = splice @$all_msg_ids, 0, $max ) {
-
-        my $bucket_id = $counter % $opts->{threads};
-        my $cur_set = Mail::IMAPClient::MessageSet->new( @cur_block );
-        push @{$msg_set_buckets->{$bucket_id}}, $cur_set;
-        $counter++;
-
-    }
-
-    verbose( "Sequences: " . Dumper( $msg_set_buckets ) );
-
-    return $msg_set_buckets;
-
-} # }}}
-
-# {{{ stripper
-#
-# Oddly, the chomp function behaves in an unexpected way on subjects and other
-# headers returned from the imap server.  I know it's an issue of LF vs. CR, but
-# I still couldn't get it to behave cleanly, so I did it this way rather than
-# any chomp chop chomp monkey business...
-#
-sub stripper {
-
-    my $name  = shift;
-    my $field = shift;
-
-    return unless $name;
-    return unless $field;
-
-    $field =~ s/\n+//;
-    $field =~ s/\r+//;
-    $field =~ s/\R+//;
-    $field =~ s/^\s+//;
-    $field =~ s/\s+$//;
-
-    # Strip off the name of the envelope attribute
-    #
-    if ( $field =~ m/^$name:\s+(.*)$/ ) {
-        $field = $1;
-    }
-
-    # For from addresses, just grab the address.
-    #
-    if ( $name eq 'From' ) {
-        $field =~ m/[<](.*)[>]/;
-        $field = $1;
-    }
-
-    # Strip off the subject cruft...
-    #
-    if ( $name eq 'Subject' ) {
-        $field =~ s/^Re:\s+//gi;
-        $field =~ s/^Fwd:\s+//gi;
-        $field =~ s/\s+Re:\s+//gi;
-        $field =~ s/\s+Fwd:\s+//gi;
-    }
-
-
-    if ( ! $field ) {
-        $field = ']]EMPTY[[';
-    }
-
-    return $field;
-
-} # }}}
-
-# {{{ show_report_types
-#
-sub show_report_types {
-
-my $types = report_types();
-
-print "\n\nType                                 Description\n"
-    . '-' x 75
-    . "\n";
-
-for ( sort { $types->{$a} cmp $types->{$b} } keys %$types ) {
-
-# pretty print the types of reports...
-#
-format STDOUT =
-@<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<  @*
-$_, $types->{$_}
-.
-write;
-}
-
-die_clean( 0, '' );
-
-} # }}}
+# {{{ Execution and configuration
 
 # {{{ show_error
 #
@@ -3338,141 +3658,6 @@ sub show_error {
     print "\n\n\n$error\n";
 
     enter();
-
-} # }}}
-
-# {{{ break_fetch
-#
-# Yeah.  This doesn't work right.
-#
-sub break_fetch {
-
-    print "Will break after the current fetch...\n";
-    $break = 1;
-
-    return;
-
-} # }}}
-
-# {{{ generate_subject_search_string
-#
-# To display a helpful string you can cut and paste directly into the gmail
-# search pane to search for the reported message.
-#
-sub generate_subject_search_string {
-
-    my ( $folder, $date, $subject ) = @_;
-
-    my %folders = (
-                    'INBOX'             => 'in:inbox',
-                    '[Gmail]/Sent Mail' => 'is:sent',
-                    'Sent'              => 'is:sent',
-                    'Sent Items'        => 'is:sent',
-                    '[Gmail]/Spam'      => 'is:spam',
-                    '[Gmail]/Starred'   => 'is:starred',
-                    '[Gmail]/All Mail'  => 'in:anywhere',
-    );
-
-    my $label;
-
-    if ( defined $folders{$folder} ) {
-        $label = $folders{$folder};
-    } else {
-        $label = 'label:' . '"' . $folder . '"';
-    }
-
-    my $dm = Date::Manip::Date->new();
-
-    my ( $bdate, $adate );
-
-    my $aresult = $dm->parse($date);
-
-    if ( $aresult ) {
-        $bdate = '';
-        $adate = '';
-    } else {
-
-        my $parsed_adate = $dm->printf('%Y/%m/%d');
-        my $aepoch       = $dm->printf('%s');
-        my $bepoch       = $aepoch + ( 24 * 60 * 60 );
-        my $bresult      = $dm->parse("epoch $bepoch");
-        my $parsed_bdate = $dm->printf('%Y/%m/%d');
-
-        $adate = "after:$parsed_adate";
-        $bdate = "before:$parsed_bdate";
-
-    }
-
-    return
-        join( ' ',
-              "subject:\"$subject\"",
-              $adate,
-              $bdate,
-              $label );
-
-} # }}}
-
-# {{{ generate_search_string
-#
-# To display a helpful string you can cut and paste directly into the gmail
-# search pane to search for the reported message.
-#
-sub generate_search_string {
-
-    my $args = shift;
-
-
-    my $folder = $args->{folder};
-    my $date   = $args->{date};
-    my $header = $args->{header};
-    my $value  = $args->{value};
-
-    my %folders = (
-                    'INBOX'             => 'in:inbox',
-                    '[Gmail]/Sent Mail' => 'is:sent',
-                    'Sent'              => 'is:sent',
-                    'Sent Items'        => 'is:sent',
-                    '[Gmail]/Spam'      => 'is:spam',
-                    '[Gmail]/Starred'   => 'is:starred',
-                    '[Gmail]/All Mail'  => 'in:anywhere',
-    );
-
-    my $label;
-
-    if ( defined $folders{$folder} ) {
-        $label = $folders{$folder};
-    } else {
-        $label = 'label:' . '"' . $folder . '"';
-    }
-
-    my $dm = Date::Manip::Date->new();
-
-    my ( $bdate, $adate );
-
-    my $aresult = $dm->parse($date);
-
-    if ( $aresult ) {
-        $bdate = '';
-        $adate = '';
-    } else {
-
-        my $parsed_adate = $dm->printf('%Y/%m/%d');
-        my $aepoch       = $dm->printf('%s');
-        my $bepoch       = $aepoch + ( 24 * 60 * 60 );
-        my $bresult      = $dm->parse("epoch $bepoch");
-        my $parsed_bdate = $dm->printf('%Y/%m/%d');
-
-        $adate = "after:$parsed_adate";
-        $bdate = "before:$parsed_bdate";
-
-    }
-
-    return
-        join( ' ',
-              "$header:\"$value\"",
-              $adate,
-              $bdate,
-              $label );
 
 } # }}}
 
@@ -3527,93 +3712,6 @@ sub read_config_file {
     close $conf_fh;
 
     return;
-
-} # }}}
-
-# {{{ convert_date_to_epoch
-#
-sub convert_date_to_epoch {
-
-    my $date = shift;
-
-    my $dm = Date::Manip::Date->new();
-
-    $dm->parse($date);
-    my $epoch = $dm->printf('%s');
-
-    return $epoch
-        ? $epoch
-        : 0;
-
-}    # }}}
-
-# {{{ sub convert_bytes
-#
-# For pretty printing byte numbers.
-#
-sub convert_bytes {
-
-    my $bytes = shift;
-
-    return unless $bytes;
-
-    my $KB = $bytes / 1024;
-
-    return sprintf( '%.1fKB', $KB )               if $KB < 1000;
-    return sprintf( '%.1fMB', $KB / 1024 )        if $KB < 1000000;
-    return sprintf( '%.1fGB', $KB / 1024 / 1024 ) if $KB < 100000000;
-
-} # }}}
-
-# {{{ sub convert_seconds
-#
-# For pretty printing the number of seconds.
-#
-sub convert_seconds {
-
-    my $seconds = shift;
-
-    return unless $seconds;
-
-    my $days  = int( $seconds / ( 24 * 60 * 60 ) );
-    my $hours = ( $seconds / ( 60 * 60 ) ) % 24;
-    my $mins  = ( $seconds / 60 ) % 60;
-    my $secs  = $seconds % 60;
-
-    my $days_string  = $days  ? "$days days " : '';
-    my $hours_string = $hours ? sprintf( '%02d', $hours ) . ' hours '   : '';
-    my $mins_string  = $mins  ? sprintf( '%02d', $mins  ) . ' minutes ' : '';
-    my $secs_string  = $secs  ? sprintf( '%02d', $secs  ) . ' seconds ' : '';
-
-    return join( '', $days_string, $hours_string, $mins_string, $secs_string );
-
-} # }}}
-
-# {{{ create_ssl_socket
-#
-sub create_ssl_socket {
-
-    my $description = shift;
-
-    my $s = IO::Socket::SSL->new(
-        Proto                   => 'tcp',
-        PeerAddr                => $opts->{server},
-        PeerPort                => $opts->{port},
-        SSL_create_ctx_callback => sub { my $ctx = shift;
-                                        ddump( 'ssl_ctx', $ctx );
-                                        ddump( 'ssl_ctx_callback_description', $description );
-                                        Net::SSLeay::CTX_sess_set_cache_size( $ctx, 128 ); },
-    );
-
-    select ($s);
-    $| = 1;
-    select (STDOUT);
-    $| = 1;
-
-    $s->verify_hostname( $opts->{server},'imap' )
-        or warn "Error running verify_hostname: $!\n";
-
-    return $s;
 
 } # }}}
 
@@ -3709,34 +3807,6 @@ sub user_prompt {
 
 # }}}
 
-# {{{ print_report
-#
-# Display our report.  Put in its own function because I
-# intend to complicate this later.
-#
-# TODO
-#
-# Better pager handling.
-#
-sub print_report {
-
-    my $report = shift;
-
-    my $file = "$ENV{HOME}/imap-report.txt";
-    open ( RPT, ">" . $file )
-        or die_clean( 1, "Unable to write report.\n" );
-
-    print RPT $_ for @$report;
-    close RPT;
-
-    #system( "less -niSRX $file" );
-    system( "cat $file" );
-
-    die_clean( 0, "Quitting" )
-        if $opts->{list};
-
-} # }}}
-
 # {{{ debugging output
 #
 sub ddump {
@@ -3770,6 +3840,8 @@ sub enter {
     <>;
 
 }
+
+# }}}
 
 # }}}
 
