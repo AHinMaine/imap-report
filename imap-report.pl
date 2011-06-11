@@ -260,23 +260,22 @@ $opts->{debug}             = 0;
 $opts->{verbose}           = 0;
 $opts->{pager}             = '/usr/bin/less';
 $opts->{log}               = '/tmp/imap-report.debuglog';
-$opts->{top}               = 20;      # default for top 10 style reports
-$opts->{min}               = 100_000; # default minimum size in bytes
-$opts->{Maxcommandlength}  = 1_000;   # Number of messages in a single fetch operation
+$opts->{top}               = 10;      # default for top 10 style reports
+$opts->{Maxcommandlength}  = 1_000;   # size of a single fetch operation
 $opts->{Keepalive}         = 0;
 $opts->{Fast_io}           = 1;
 $opts->{Reconnectretry}    = 3;
 $opts->{Ssl}               = 1;
 $opts->{Uid}               = 0;
-$opts->{cache_file}        = "$ENV{HOME}/.imap-report.cache";
-$opts->{cache_age}         = 24 * 60 * 60;
-$opts->{conf}              = "$ENV{HOME}/.imapreportrc";
 $opts->{force}             = 0;
 $opts->{list}              = 0;
 $opts->{types}             = 0;
 $opts->{threads}           = 0;
 $opts->{use_threaded_mode} = 0;
-$opts->{threshold}         = 20;    # Message count threshold before flushing message cache
+$opts->{threshold}         = 20;      # Message count threshold before flushing message cache
+$opts->{conf}              = "$ENV{HOME}/.imapreportrc";
+$opts->{cache_file}        = "$ENV{HOME}/.imap-report.cache";
+$opts->{cache_age}         = 24 * 60 * 60;
 
 GetOptions(
 
@@ -287,7 +286,6 @@ GetOptions(
         'user=s',
         'password=s',
         'top=i',
-        'min=i',
         'filters|folder|search=s@{,}',
         'exclude=s@{,}',
         'report=s',
@@ -395,7 +393,6 @@ verbose( qq[
              Port: $opts->{port}
          Username: $opts->{user}
 
-              min: $opts->{min}
               top: $opts->{top}
  Maxcommandlength: $opts->{Maxcommandlength}
           threads: $opts->{threads}
@@ -472,34 +469,34 @@ if ( $opts->{debug} ) {
 }
 
 
-{
+    {
 
-    # Do a quick imap login to make sure we have good credentials.
-    #
-    my $imap_socket =
-        $opts->{Ssl}
-        ? create_ssl_socket( 'first_imap_connection_socket' )
-        : 0
-        ;
+        # Do a quick imap login to make sure we have good credentials.
+        #
+        my $imap_socket =
+            $opts->{Ssl}
+            ? create_ssl_socket( 'first_imap_connection_socket' )
+            : 0
+            ;
 
-    if ( $imap_socket ) {
-        $imap_options{Socket} = $imap_socket;
+        if ( $imap_socket ) {
+            $imap_options{Socket} = $imap_socket;
+        }
+
+        my $imap = Mail::IMAPClient->new(%imap_options)
+            or die "Cannot connect to host : $@";
+
+        if ( $imap->IsAuthenticated ) {
+            print "Login successful.\n";
+        } else {
+            die_clean( 1, "Login failed: $!" );
+        }
+
+        $imap->disconnect;
+
+        $imap_socket->close( SSL_no_shutdown => 1, SSL_ctx_free => 1 );
+
     }
-
-    my $imap = Mail::IMAPClient->new(%imap_options)
-        or die "Cannot connect to host : $@";
-
-    if ( $imap->IsAuthenticated ) {
-        print "Login successful.\n";
-    } else {
-        die_clean( 1, "Login failed: $!" );
-    }
-
-    $imap->disconnect;
-
-    $imap_socket->close( SSL_no_shutdown => 1, SSL_ctx_free => 1 );
-
-}
 
 # Some global queues used in threaded fetching mode...
 #
@@ -511,12 +508,9 @@ my $reports = report_types();
 #
 my $cache = init_cache( $opts->{cache_file} );
 
-my @imap_folders = fetch_folders(
-    {   cache    => $cache,
-        filters  => $opts->{filters},
-        excludes => $opts->{exclude}
-    }
-);
+my @imap_folders = fetch_folders({ cache    => $cache,
+                                   filters  => $opts->{filters},
+                                   excludes => $opts->{exclude} });
 
 die_clean( 1, "No folders in fetched lists!" ) unless scalar(@imap_folders);
 
@@ -536,11 +530,9 @@ while (1) {
         }
 
         my $banner =
-            "\n(Current minimum size of message to report: "
-            . $opts->{min}
-            . ' bytes, '
-            . convert_bytes( $opts->{min} ) . ")\n\n"
-            .  '(Number of folders in list: ' . scalar(@imap_folders) . ")\n\n\n"
+              '(Number of folders in list: '
+            . scalar(@imap_folders)
+            . ")\n\n\n"
             . "Choose your report type: \n\n\n";
 
 
@@ -659,9 +651,8 @@ sub list_folders {
 
 # {{{ biggest_messages_report
 #
-# This report is to give us a top-ten style report to see
-# the largest messages in a folder.  It disregards any
-# messages below our 'min' size.
+# This report is to give us a top-ten style report to see the largest messages
+# in a folder.
 #
 # Expects to receive a cache object.
 #
@@ -709,7 +700,6 @@ sub biggest_messages_report {
 
     push @breport, "\nTotal time to fetch all messages: $elapsed seconds\n";
    #push @breport, 'Iterated ' . scalar( keys %$fetched_messages ) . " messages.\n";
-   #push @breport, '(Ignored messages smaller than ' . $opts->{min} . " bytes.)\n";
     push @breport, "\nReporting on the top " . $opts->{top} . " messages.\n";
 
     my $totalsize;
@@ -963,13 +953,32 @@ sub messages_by_header_report {
     }
 
 
+    push @cur_report, "\n" x 10;
+
+    push @cur_report, "\n" x 10 . "Total messages processed: $num\n\n";
+    push @cur_report, 'Top ' . $opts->{top} . " $header addresses: \n\n\n";
+
+
     my $msgs = cache_report({ folder      => $folder,
                               header      => $header,
                               cache       => $mbhr_cache,
                               report_type => 'report_by_header' });
 
 
-    ddump( 'msgs', $msgs );
+    ddump( 'msgs', $msgs ) if $opts->{debug};
+
+    # Dynamically calculate column widths for our list of messages
+    #
+    my @rows;
+
+    my $folder_width       = 0;
+    my $msg_id_width       = 0;
+    my $to_address_width   = 0;
+    my $from_address_width = 0;
+    my $date_width         = 0;
+    my $subject_width      = 0;
+    my $size_width         = 0;
+    my $matches_width      = 0;
 
     for ( @$msgs ) {
 
@@ -982,28 +991,89 @@ sub messages_by_header_report {
         my $size         = $_->[6];
         my $matches      = $_->[7];
 
+        $folder_width       = max( $folder_width,       length $folder );
+        $msg_id_width       = max( $msg_id_width,       length $msg_id );
+        $to_address_width   = max( $to_address_width,   length $to_address );
+        $from_address_width = max( $from_address_width, length $from_address );
+        $date_width         = max( $date_width,         length $date );
+        $subject_width      = max( $subject_width,      length $subject );
+        $size_width         = max( $size_width,         length $size );
+        $matches_width      = max( $matches_width,      length $matches );
 
-       #push @cur_report, "$date\t$size\t\t$subject\n";
+        my $titles_added = 0;
 
-        push @cur_report, 
-                            join( "\t", 
-                                        $matches,
-                                        $to_address,
-                                        $from_address,
-                                        $date,
-                                        $subject,
-                                        $size 
-                            );
-
-        push @cur_report, "\n";
+        push @rows, [
+                        $matches,
+                        $to_address,
+                        $from_address,
+                        $date,
+                        $subject,
+                        $size 
+                    ];
 
     }
 
+    my @cols = ( '*Matches*', 'To', 'From', 'Date', 'Subject', 'Size' );
 
-    push @cur_report, "\n" x 10 . "Total messages processed: $num\n\n";
-    push @cur_report, 'Top ' . $opts->{top} . " $header addresses: \n\n\n";
-    push @cur_report, "Count\t\t\t$header\n" . '-' x 60 . "\n";
-    push @cur_report, "\n\n" . '-' x 60 . "\n\n";
+    # Kludge alert...  run the column titles through our dynamic column sizer
+    # just to handle a column title that might be longer than our data in the
+    # column.
+    #
+    $matches_width      = max( $matches_width,      length $cols[0] );
+    $to_address_width   = max( $to_address_width,   length $cols[1] );
+    $from_address_width = max( $from_address_width, length $cols[2] );
+    $date_width         = max( $date_width,         length $cols[3] );
+    $subject_width      = max( $subject_width,      length $cols[4] );
+    $size_width         = max( $size_width,         length $cols[5] );
+
+
+    unshift( @rows, [ 
+                      '-' x $matches_width,
+                      '-' x $to_address_width, 
+                      '-' x $from_address_width,
+                      '-' x $date_width,
+                      '-' x $subject_width,
+                      '-' x $size_width
+                    ]);
+
+    unshift( @rows,  \@cols );
+
+    my $pad = 2;
+    for ( @rows ) {
+
+        my $fmt = "%-${matches_width}s"     . ' ' x $pad; #0
+        $fmt .= "%-${to_address_width}s"    . ' ' x $pad; #1
+        $fmt .= "%-${from_address_width}s"  . ' ' x $pad; #2
+        $fmt .= "%-${date_width}s"          . ' ' x $pad; #3
+        $fmt .= "%-${subject_width}s"       . ' ' x $pad; #4
+        $fmt .= "%-${size_width}s"          . ' ' x $pad; #5
+        $fmt .= "\n";
+
+        my $cur_row =
+            sprintf(
+                 $fmt,
+                 $_->[0],
+                 $_->[1],
+                 $_->[2],
+                 $_->[3],
+                 $_->[4],
+                 $_->[5] );
+
+        push @cur_report, $cur_row;
+
+    }
+
+    ddump( 'folder_width',       $folder_width       ) if $opts->{debug};
+    ddump( 'msg_id_width',       $msg_id_width       ) if $opts->{debug};
+    ddump( 'to_address_width',   $to_address_width   ) if $opts->{debug};
+    ddump( 'from_address_width', $from_address_width ) if $opts->{debug};
+    ddump( 'date_width',         $date_width         ) if $opts->{debug};
+    ddump( 'subject_width',      $subject_width      ) if $opts->{debug};
+    ddump( 'size_width',         $size_width         ) if $opts->{debug};
+    ddump( 'matches_width',      $matches_width      ) if $opts->{debug};
+
+
+    push @cur_report, "\n";
 
 
     my $display_header;
@@ -1014,41 +1084,6 @@ sub messages_by_header_report {
         $display_header = $header;
     }
 
-    push @cur_report,
-          "\n\n\n"
-        . '-' x 60 . "\n\n"
-        . "All messages, sorted by $header\n\n\n"
-        . "Date\t\t\t\tSize\t\t$display_header\n"
-        . '-' x 60 . "\n\n";
-
-    for ( @$msgs ) {
-
-        my $folder       = $_->[0];
-        my $msg_id       = $_->[1];
-        my $to_address   = $_->[2];
-        my $from_address = $_->[3];
-        my $date         = $_->[4];
-        my $subject      = $_->[5];
-        my $size         = $_->[6];
-
-
-        my $report_header;
-
-        if ( $header eq 'From' ) {
-            $report_header = $from_address;
-        } elsif ( $header eq 'To' ) {
-            $report_header = $to_address;
-        } elsif ( $header eq 'Subject' ) {
-            $report_header = $subject;
-        } elsif ( $header eq 'Size' ) {
-            $report_header = $subject;
-        } else {
-            $report_header = $size;
-        }
-
-        push @cur_report, "$date\t$size\t\t$report_header\n";
-
-    }
 
     #push @cur_report, "\n\n\nTime to fetch: $elapsed seconds\n";
     #push @cur_report, "Iterated " . scalar( keys %$msgs ) . " messages.\n\n";
@@ -1668,9 +1703,11 @@ sub fetch_messages {
         print "Found $cached_count cached messages\n";
         return $cached_count;
 
+    } else {
+        verbose( "Cached: $cached_count\nNum: $num\n" );
     }
 
-    print "Updating cache for folder '$folder'\n";
+    print "Updating cache for folder '$folder'\n\n\n\n";
 
     my $fetched = {};
 
@@ -1695,21 +1732,16 @@ sub fetch_messages {
 
         if ( $use_threaded_mode && ! $skip_threads ) {
 
-            $fetched = threaded_fetch_msgs({ cache => $f_cache, folder => $folder, msgs_in_imap_folder => $num });
+            $fetched = threaded_fetch_msgs({ cache => $f_cache, folder => $folder, msgs_in_imap_folder => $num, msg_ids => $msg_ids });
 
         } else {
 
-           #fetch_msgs({ cache => $f_cache, folder => $folder, msgs_in_imap_folder => $num })
-
             $fetched = $f_imap->fetch_hash( $msg_ids, @headers );
-
 
             my $max = ( scalar( keys %$fetched ) );
 
-            my $sbar = IMAP::Progress->new( max    => $max,
-                                            length => 10 );
-
-            print "\n\n";
+            my $sbar = IMAP::Progress->new( length => 10,
+                                            max    => $max );
 
             my $scounter = 0;
 
@@ -2049,7 +2081,10 @@ sub threaded_fetch_msgs {
                 {
                     lock($fetcher_status);
                     $statuses = $fetcher_status->pending();
+
                 }
+
+                $tbar->text( "$statuses threads complete" );
 
                 last if $statuses == $opts->{threads};
 
@@ -2104,6 +2139,8 @@ sub threaded_fetch_msgs {
 #       @{$fetcher}{ keys %from_fetched_queue } = values %from_fetched_queue;
 
         print "\nMessage fetching complete...\n";
+
+        ddump( 'from_fetched_queue', \%from_fetched_queue );
 
         return \%from_fetched_queue;
 
@@ -2312,8 +2349,8 @@ sub create_ssl_socket {
         PeerAddr                => $opts->{server},
         PeerPort                => $opts->{port},
         SSL_create_ctx_callback => sub { my $ctx = shift;
-                                        ddump( 'ssl_ctx', $ctx );
-                                        ddump( 'ssl_ctx_callback_description', $description );
+                                        ddump( 'ssl_ctx', $ctx ) if $opts->{debug};
+                                        ddump( 'ssl_ctx_callback_description', $description ) if $opts->{debug};
                                         Net::SSLeay::CTX_sess_set_cache_size( $ctx, 128 ); },
     );
 
@@ -2392,13 +2429,20 @@ sub stripper {
     my $field = shift;
 
     return unless $name;
-    return unless $field;
 
-    $field =~ s/\n+//;
-    $field =~ s/\r+//;
-    $field =~ s/\R+//;
+    if ( ! $field ) {
+        $field = ']]EmptyField[[';
+    }
+
+    $field =~ s/\n+//g;
+    $field =~ s/\r+//g;
+    $field =~ s/\R+//g;
+    $field =~ s/\t+//g;
     $field =~ s/^\s+//;
     $field =~ s/\s+$//;
+
+    # And for good measure...
+    $field =~ s/[[:^print:]]//g;
 
     # Strip off the name of the envelope attribute
     #
@@ -2411,15 +2455,13 @@ sub stripper {
     if ( $name eq 'From' or $name eq 'To' ) {
         $field =~ m/[<](.*)[>]/;
         $field = $1;
-
         $field = lc($field);
-
     }
 
     # For Dates, convert to epoch
     #
     if ( $name eq 'Date' ) {
-        my $epoch = convert_date_to_epoch( $field );
+        my $epoch = convert_date_to_epoch($field);
         $field = $epoch;
     }
 
@@ -2576,6 +2618,18 @@ sub generate_search_string {
 
 } # }}}
 
+# {{{ max
+#
+sub max {
+
+    my ( $a, $b ) = @_;
+
+    return $a > $b
+        ? $a
+        : $b;
+
+} # }}}
+
 # }}}
 
 # {{{ Converters
@@ -2705,9 +2759,8 @@ sub folder_choice {
     # Term::Menus to allow us to pick from the list of
     # folders.
     #
-    my $choice = show_folder_picker({
-                    imap_folders => $folders,
-                    banner => "Choose folder for report type: $type" });
+    my $choice = show_folder_picker({ imap_folders => $folders,
+                                      banner       => "Choose folder for report type: $type" });
 
     next unless $choice;
 
@@ -2994,12 +3047,13 @@ sub check_cache {
             FROM
                 messages
             WHERE
-                folder = ?
+                server = ?
+                AND folder = ?
         ];
 
         my $sth = $dbh->prepare( $sql );
 
-        $sth->execute($value);
+        $sth->execute( $opts->{server}, $value );
 
         my $count = $sth->fetch;
 
@@ -3301,7 +3355,7 @@ sub cache_report {
                                       $folder,
                                       $opts->{top}
                                     )
-            } or ddump( "Error with selectall_arrayref: $!" );
+            } or ddump( "Error with selectall_arrayref: $!" ) if $opts->{debug};
 
         ddump( 'selectall_results', @results ) if $opts->{debug};
 
@@ -3361,7 +3415,7 @@ sub cache_report {
             $header_column = 'subject';
         }
 
-        ddump( 'header_column', $header_column );
+        ddump( 'header_column', $header_column ) if $opts->{debug};
 
 
         my $sql = qq[
@@ -3385,11 +3439,11 @@ sub cache_report {
             LIMIT ?
         ];
 
-        ddump( 'report_by_header_sql',           $sql );
-        ddump( 'report_by_header_header_column', $header_column );
-        ddump( 'report_by_header_server',        $opts->{server} );
-        ddump( 'report_by_header_folder',        $folder );
-        ddump( 'report_by_header_top',           $opts->{top} );
+        ddump( 'report_by_header_sql',           $sql )            if $opts->{debug};
+        ddump( 'report_by_header_header_column', $header_column )  if $opts->{debug};
+        ddump( 'report_by_header_server',        $opts->{server} ) if $opts->{debug};
+        ddump( 'report_by_header_folder',        $folder )         if $opts->{debug};
+        ddump( 'report_by_header_top',           $opts->{top} )    if $opts->{debug};
 
 # {{{
 
@@ -3420,7 +3474,7 @@ ORDER BY
                                     )
             };
 
-        ddump( 'selectall_results', @results );# if $opts->{debug};
+        ddump( 'selectall_results', @results ) if $opts->{debug};
 
         my $messages = [];
 
@@ -3983,16 +4037,6 @@ The number of messages in top ten style reports.
 
 (default: 10)
 
-=item B<--min> I<number of bytes>
-
-Messages smaller than this size will be ignored when gathering statistics on individual messages.
-
-(default: 100000)
-
-=item B<--maxfetch> I<integer number>
-
-The size of an individual fetch operation.  Breaks a fetch operation up into smaller chunks so that an individual folder with a massive number of messages will not kill the operation of there is a timeout or other communication problem.
-
 =item B<--filters> I<string>
 
 Folder filters.  Restrict all operations to folders matching the specified string.  This option can be specified multiple times.
@@ -4000,6 +4044,20 @@ Folder filters.  Restrict all operations to folders matching the specified strin
 =item B<--exclude> I<string>
 
 Folder exclusions.  The list of folders will be pruned of the ones matching the specified string.  This option can be specified multiple times.  Perl compatible regex should work as long as you take care not to allow your shell to swallow up the expression.
+
+=item B<--use_threaded_mode>
+
+Use multiple threads to fetch messages simultaneously.  Speeds things up dramatically, but the underlying Net::SSLeay isn't very thread safe.  Tried to make it as stable as possible keep the threads from aggressively tearing down the imap connection when they're done, but this option not may not work well for you.  You can also fairly easily hit Google's bandwidth limit for your imap connection.
+
+(Redundant, ugly commandline option name is so you'll only use it very intentionally.)
+
+(default: false)
+
+=item B<--threads> (valid values: 2, 3, 5, 7, 11, 13, 17)
+
+Specify the number of threads.  Higher is faster, but too high will engage the temporary bandwidth usage ban from Google.
+
+(default: 0) 
 
 =item B<--cache> I<cache_filename>
 
@@ -4015,11 +4073,17 @@ Maximum age of cached information.
 
 (default: 1 day)
 
+=item B<--threshold>
+
+The message count threshold where the number of messages in cache differs from the number of messages on the server so that a folder isn't fully refetched just because a single new message was received.
+
+(default: 20)
+
 =item B<--conf> I<config_filename>
 
 Name of the file in which to read configuration options.
 
-All of these configuration options can be stored in this file using the same names listed here.  Must only be readable by the user.
+All of these configuration options can be stored in the specified file using the same names listed here.  Must only be readable by the user.
 
 (default: $HOME/.imapreportrc)
 
@@ -4027,11 +4091,33 @@ All of these configuration options can be stored in this file using the same nam
 
 Just show the list of folders.
 
-=item B<--Keepalive>
+=item B<--types>
 
-Corresponds to the Mail::IMAPClient Keepalive option.
+Just show the types of reports available for use with the --report option.
 
-(default: true)
+=item B<--report>
+
+Specify a specific type of report shown by the --types option.
+
+=item B<--pager>
+
+The pager to use for displaying the report.
+
+(default: /usr/bin/less)
+
+=item B<--debug>
+
+Lots of ugly debugging output to a logfile (--log)
+
+=item B<--verbose>
+
+A bit more output than usual
+
+=back
+
+=head3 Mail::IMAPClient pass-through options
+
+=over 15
 
 =item B<--Fast_io>
 
@@ -4039,11 +4125,11 @@ Corresponds to the Mail::IMAPClient Fast_io option to allow buffered I/O.
 
 (default: true)
 
-=item B<--Reconnectretry>
+=item B<--Keepalive>
 
-Corresponds to the Mail::IMAPClient Reconnectretry option to and re-establish lost connections.
+Corresponds to the Mail::IMAPClient Keepalive option.
 
-(default: 3)
+(default: false)
 
 =item B<--Maxcommandlength>
 
@@ -4051,19 +4137,17 @@ Corresponds to the Mail::IMAPClient Maxcommandlength option to limit the size of
 
 (default: 1000)
 
+=item B<--Reconnectretry>
+
+Corresponds to the Mail::IMAPClient Reconnectretry option to try and re-establish lost connections.
+
+(default: 3)
+
 =item B<--Ssl>
 
 Corresponds to the Mail::IMAPClient Ssl option.
 
 (default: true)
-
-=item B<--debug>
-
-Lots of ugly debugging output to a logfile...
-
-=item B<--verbose>
-
-A bit more output than usual
 
 =back
 
