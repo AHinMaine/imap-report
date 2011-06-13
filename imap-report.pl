@@ -3806,7 +3806,7 @@ sub user_prompt {
 
     while ( ! $user ) {
         print 'Email : ';
-        chomp( my $user = <> );
+        chomp( $user = <> );
         print "\n";
     }
     return $user;
