@@ -4051,9 +4051,10 @@ C<./imap-report.pl>
 
 =head1 ACKNOWLEDGEMENTS
 
-Built largely using Mail::IMAPClient currently maintained by E<lt>L<PLOBBES|http://search.cpan.org/~plobbes/>E<gt>
-and the Term::Menus module by E<lt>L<REEDFISH|http://search.cpan.org/~reedfish/>E<gt>, along with
-String::ProgressBar from E<lt>L<AHERNIT|http://search.cpan.org/~ahernit/>E<gt>.
+Built largely using Mail::IMAPClient currently maintained by E<lt>L<PLOBBES|http://search.cpan.org/~plobbes/>E<gt>, 
+the Mail::Address module by E<LT>L<MARKOV|http://search.cpan.org/~markov/>E<gt> (also a former maintainer 
+of Mail::IMAPClient), the Term::Menus module by E<lt>L<REEDFISH|http://search.cpan.org/~reedfish/>E<gt>, along 
+with String::ProgressBar from E<lt>L<AHERNIT|http://search.cpan.org/~ahernit/>E<gt>.
 
 =head1 TODO
 
