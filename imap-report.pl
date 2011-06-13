@@ -1168,6 +1168,7 @@ sub messages_by_header_report {
 
     push @cur_report, $_
         for tabulator({ rows    => $msgs,
+                        header  => $header,
                         columns => [qw/COUNT TO FROM DATE SUBJECT SIZE/] });
 
     push @cur_report, "\n\n\n";
@@ -1387,7 +1388,7 @@ for ( tabulator({ rows    => $rpts, columns => [qw/Type Description/] }) ) {
 
 print for @cur_report;
 
-die_clean( 0, '' );
+die_clean( 0, 'Quitting...' );
 
 } # }}}
 
@@ -1437,12 +1438,25 @@ sub get_folder_size {
 
 # {{{ tabulator
 #
+# Pretty pretty some rows in a dynamic width table...
+#
+# Use an anon hashref to pass in an arrayref of rows and a corresponding
+# arrayref of column names.
+#
+# returns a list of the rows of the table.
+#
 sub tabulator {
 
     my $args = shift;
 
     my $rows    = $args->{rows};
     my $columns = $args->{columns};
+
+    my $header  = 
+        defined $args->{header} && $args->{header}
+        ? $args->{header}
+        : ''
+        ;
 
     my $cols    = scalar(@$columns);
     my $pad     = 2;
@@ -1552,9 +1566,9 @@ sub fetch_folders {
     $list = cache_check({ cache => $ff_cache, content_type => 'folder_list' });
 
     my @filtered_cached;
-    my $cached_count;
+    my $cached_count = 0;
 
-    if ( scalar(@$list) ) {
+    if ( defined $list && ref $list eq 'ARRAY' && scalar(@$list) ) {
 
         @filtered_cached = filter_folders({ folders => $list });
 
@@ -1783,7 +1797,7 @@ sub fetch_messages {
         return $cached_count;
 
     } else {
-        print "Found $cached_count messages, but server shows $num messages.\n";
+        print "Found $cached_count messages in cache, but server shows $num messages.\n";
     }
 
     print "Updating cache for folder '$folder'\n\n\n\n";
@@ -2260,8 +2274,8 @@ sub cache_init {
                 server          TEXT NOT NULL,
                 folder          TEXT NOT NULL,
                 msg_id          INTEGER NOT NULL PRIMARY KEY,
-                TO              TEXT,
-                FROM            TEXT,
+                "TO"            TEXT,
+                "FROM"          TEXT,
                 SUBJECT         TEXT,
                 DATE            INTEGER NOT NULL,
                 SIZE            INTEGER NOT NULL,
@@ -2392,6 +2406,9 @@ sub cache_check {
         # {{{ fetched messages cache check
 
         return unless defined $value && $value;
+
+        cache_prune({ cache        => $dbh,
+                      content_type => $content_type });
 
         my $sql = q[
             SELECT
@@ -2555,8 +2572,8 @@ sub cache_put {
                 server,
                 msg_id,
                 folder,
-                TO,
-                FROM,
+                "TO",
+                "FROM",
                 SUBJECT,
                 DATE,
                 SIZE,
@@ -2658,6 +2675,20 @@ sub cache_prune {
 
         my $result = $sth->execute( $opts->{server}, $max_age );
 
+    } elsif ( $content_type eq 'fetched_messages' ) {
+
+        my $sql = q[
+            DELETE FROM
+                messages
+            WHERE
+                server = ?
+                AND last_update < ?
+        ];
+
+        my $sth = $dbh->prepare( $sql );
+
+        my $result = $sth->execute( $opts->{server}, $max_age );
+
     }
 
     return;
@@ -2692,8 +2723,8 @@ sub cache_report {
             SELECT
                 folder,
                 msg_id,
-                TO,
-                FROM,
+                "TO",
+                "FROM",
                 DATE,
                 SUBJECT,
                 SIZE
@@ -2779,8 +2810,8 @@ sub cache_report {
         my $sql = qq[
             SELECT
                 count( $header ) AS count_column,
-                TO,
-                FROM,
+                "TO",
+                "FROM",
                 DATE,
                 SUBJECT,
                 SIZE
@@ -2940,8 +2971,8 @@ sub cache_report {
         my $sql = q[
             SELECT
                 msg_id,
-                TO,
-                FROM,
+                "TO",
+                "FROM",
                 SUBJECT,
                 DATE,
                 SIZE
