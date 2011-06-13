@@ -769,20 +769,20 @@ if ( ! $opts->{cache_only} ) {
 #
 my %header_table = (
 
-                'Date'                          => 'INTERNALDATE',
-                'INTERNALDATE'                  => 'Date',
+                'DATE'                          => 'INTERNALDATE',
+                'INTERNALDATE'                  => 'DATE',
 
-                'Subject'                       => 'BODY[HEADER.FIELDS (SUBJECT)]',
-                'BODY[HEADER.FIELDS (SUBJECT)]' => 'Subject',
+                'SUBJECT'                       => 'BODY[HEADER.FIELDS (SUBJECT)]',
+                'BODY[HEADER.FIELDS (SUBJECT)]' => 'SUBJECT',
 
-                'Size'                          => 'RFC822.SIZE',
-                'RFC822.SIZE'                   => 'Size',
+                'SIZE'                          => 'RFC822.SIZE',
+                'RFC822.SIZE'                   => 'SIZE',
 
-                'To'                            => 'BODY[HEADER.FIELDS (TO)]',
-                'BODY[HEADER.FIELDS (TO)]'      => 'To',
+                'TO'                            => 'BODY[HEADER.FIELDS (TO)]',
+                'BODY[HEADER.FIELDS (TO)]'      => 'TO',
 
-                'From'                          => 'BODY[HEADER.FIELDS (FROM)]',
-                'BODY[HEADER.FIELDS (FROM)]'    => 'From',
+                'FROM'                          => 'BODY[HEADER.FIELDS (FROM)]',
+                'BODY[HEADER.FIELDS (FROM)]'    => 'FROM',
 
 );
 
@@ -867,19 +867,19 @@ while (1) {
 
             #@report = messages_by_subject_report({ cache => $cache });
 
-            @report = messages_by_header_report({ cache => $cache, header => 'Subject' });
+            @report = messages_by_header_report({ cache => $cache, header => 'SUBJECT' });
 
         } elsif ( $action eq $reports->{messages_by_from_address_report} ) {
 
             #@report = messages_by_from_address_report({ cache => $cache });
 
-            @report = messages_by_header_report({ cache => $cache, header => 'From' });
+            @report = messages_by_header_report({ cache => $cache, header => 'FROM' });
 
         } elsif ( $action eq $reports->{messages_by_to_address_report} ) {
 
             #@report = messages_by_to_address_report();
 
-            @report = messages_by_header_report({ cache => $cache, header => 'To' });
+            @report = messages_by_header_report({ cache => $cache, header => 'TO' });
 
         } elsif ( $action eq $reports->{list} ) {
 
@@ -915,9 +915,9 @@ sub report_types {
     return {
 #       folder_message_count_report     => 'Total count of messages in ALL folders',
 #       folder_message_sizes_report     => 'Total size of messages in ALL folders',
-        messages_by_subject_report      => 'Folder report: All messages sorted by Subject',
-        messages_by_from_address_report => 'Folder report: All messages sorted by From address',
-        messages_by_to_address_report   => 'Folder report: All messages sorted by To address',
+        messages_by_subject_report      => 'Folder report: All messages sorted by SUBJECT',
+        messages_by_from_address_report => 'Folder report: All messages sorted by FROM address',
+        messages_by_to_address_report   => 'Folder report: All messages sorted by TO address',
         biggest_messages_report         => 'Folder report: Largest messages',
         size_report                     => 'Folder report: Total size of messages',
         list                            => 'Display the current list of folders',
@@ -1016,7 +1016,7 @@ sub biggest_messages_report {
         "\n\n\n"
         . "Top messages, sorted by size...\n"
         . '-' x 60 . "\n\n"
-        . "Date\t\t\t\tSize\t\tSubject\n"
+        . "DATE\t\t\t\tSIZE\t\tSUBJECT\n"
         . '-' x 60 . "\n\n";
 
 
@@ -1024,14 +1024,14 @@ sub biggest_messages_report {
 
         my $folder       = $_->[0];
         my $msg_id       = $_->[1];
-        my $to_address   = $_->[2];
-        my $from_address = $_->[3];
-        my $date         = $_->[4];
-        my $subject      = $_->[5];
-        my $size         = $_->[6];
+        my $TO           = $_->[2];
+        my $FROM         = $_->[3];
+        my $DATE         = $_->[4];
+        my $SUBJECT      = $_->[5];
+        my $SIZE         = $_->[6];
 
 
-        push @breport, "$date\t$size\t\t$subject\n";
+        push @breport, "$DATE\t$SIZE\t\t$SUBJECT\n";
 
     }
 
@@ -1116,9 +1116,9 @@ sub messages_by_header_report {
     #
     # YUCK.
     #
-    if ( $header eq 'Subject' ) {
+    if ( $header eq 'SUBJECT' ) {
         $report_type = $reports->{messages_by_subject_report};
-    } elsif ( $header eq 'To' ) {
+    } elsif ( $header eq 'TO' ) {
         $report_type = $reports->{messages_by_to_address_report};
     } else {
 
@@ -1129,9 +1129,6 @@ sub messages_by_header_report {
     }
 
     my @imap_folders = fetch_folders({ cache => $mbhr_cache });
-
-    #show_error( "IMAP FOLDERS IS NOW: " . Dumper( \@imap_folders ) );
-
 
     my $folder = folder_choice({ folders => \@imap_folders, report_type => $report_type });
 
@@ -1158,7 +1155,7 @@ sub messages_by_header_report {
     push @cur_report, "Finished fetching messages for folder '$folder'\n\n";
     push @cur_report, "Total time to fetch messages: $elapsed\n\n";
     push @cur_report, "Total messages processed: $num\n\n";
-    push @cur_report, 'Top ' . $opts->{top} . " $header addresses: \n\n\n";
+    push @cur_report, 'Top ' . $opts->{top} . " $header instances\n\n\n";
 
 
     my $msgs = cache_report({ folder      => $folder,
@@ -1171,7 +1168,7 @@ sub messages_by_header_report {
 
     push @cur_report, $_
         for tabulator({ rows    => $msgs,
-                        columns => [qw/Count To From Date Subject Size/] });
+                        columns => [qw/COUNT TO FROM DATE SUBJECT SIZE/] });
 
     push @cur_report, "\n\n\n";
 
@@ -1322,7 +1319,7 @@ sub folder_message_sizes_report {
     my @msize_report = ();
 
     push @msize_report, "\n\n$report_type\n\n";
-    push @msize_report, "Size\t\t\tCount\t\t\tFolder\n";
+    push @msize_report, "SIZE\t\t\tCount\t\t\tFolder\n";
     push @msize_report, '-' x 60 . "\n";
 
     my $raw_report         = {};
@@ -1344,17 +1341,17 @@ sub folder_message_sizes_report {
                                                              cache  => $fmsr_cache });
 
         if ($cur_size) {
-            $raw_report->{$_}->{size}  = $cur_size;
+            $raw_report->{$_}->{SIZE}  = $cur_size;
             $raw_report->{$_}->{count} = $message_count;
             $total_num_messages += $message_count;
         }
 
     }
 
-    for my $cur_folder ( reverse sort { $raw_report->{$a}->{size} <=> $raw_report->{$b}->{size} } keys %$raw_report ) {
+    for my $cur_folder ( reverse sort { $raw_report->{$a}->{SIZE} <=> $raw_report->{$b}->{SIZE} } keys %$raw_report ) {
 
         push @msize_report,
-              convert_bytes( $raw_report->{$cur_folder}->{size} )
+              convert_bytes( $raw_report->{$cur_folder}->{SIZE} )
             . "\t" x 3
             . $raw_report->{$cur_folder}->{count}
             . "\t" x 3
@@ -1742,7 +1739,7 @@ sub fetch_messages {
     #
     # Fix this header handling...
     #
-    push @headers, $header_table{$_} for qw/Date Subject Size To From/;
+    push @headers, $header_table{$_} for qw/DATE SUBJECT SIZE TO FROM/;
 
     my $cached_count = cache_check({ cache => $f_cache, content_type => 'fetched_messages', value => $folder });
 
@@ -2065,7 +2062,7 @@ sub imap_thread {
     #
     # Fix this header handling...
     #
-    push @headers, $header_table{$_} for qw/Date Subject Size To From/;
+    push @headers, $header_table{$_} for qw/DATE SUBJECT SIZE TO FROM/;
 
     my %imap_options = %global_imap_options;
 
@@ -2263,11 +2260,11 @@ sub cache_init {
                 server          TEXT NOT NULL,
                 folder          TEXT NOT NULL,
                 msg_id          INTEGER NOT NULL PRIMARY KEY,
-                to_address      TEXT,
-                from_address    TEXT,
-                subject         TEXT,
-                date            INTEGER NOT NULL,
-                size            INTEGER NOT NULL,
+                TO              TEXT,
+                FROM            TEXT,
+                SUBJECT         TEXT,
+                DATE            INTEGER NOT NULL,
+                SIZE            INTEGER NOT NULL,
                 last_update     INTEGER
             );
 
@@ -2351,8 +2348,6 @@ sub cache_check {
             for @{ $dbh->selectall_arrayref( $sql, { Slice => {} },
                                              $opts->{server} ) };
 
-        #show_error( "cache_check_returning_folder_list: " . Dumper( $folderlist ) );
-
         if ( scalar(@$folderlist) ) {
             return $folderlist;
         } else {
@@ -2376,7 +2371,7 @@ sub cache_check {
             SELECT
                 folder
             FROM
-                FOLDERS
+                folders
             WHERE
                 server = ?
                 AND validated = 1
@@ -2560,11 +2555,11 @@ sub cache_put {
                 server,
                 msg_id,
                 folder,
-                to_address,
-                from_address,
-                subject,
-                date,
-                size,
+                TO,
+                FROM,
+                SUBJECT,
+                DATE,
+                SIZE,
                 last_update
             ) VALUES (
                 ?,
@@ -2601,11 +2596,11 @@ sub cache_put {
                 $opts->{server},
                 $_,
                 $folder,
-                $values->{$_}->{ $header_table{To} },
-                $values->{$_}->{ $header_table{From} },
-                $values->{$_}->{ $header_table{Subject} },
-                $values->{$_}->{ $header_table{Date} },
-                $values->{$_}->{ $header_table{Size} },
+                $values->{$_}->{ $header_table{TO} },
+                $values->{$_}->{ $header_table{FROM} },
+                $values->{$_}->{ $header_table{SUBJECT} },
+                $values->{$_}->{ $header_table{DATE} },
+                $values->{$_}->{ $header_table{SIZE} },
                 $in_time
             );
 
@@ -2697,17 +2692,17 @@ sub cache_report {
             SELECT
                 folder,
                 msg_id,
-                to_address,
-                from_address,
-                date,
-                subject,
-                size
+                TO,
+                FROM,
+                DATE,
+                SUBJECT,
+                SIZE
             FROM
                 messages
             WHERE
                 server = ?
                 AND folder = ?
-            ORDER BY size DESC
+            ORDER BY SIZE DESC
             LIMIT ?
         ];
 
@@ -2762,49 +2757,49 @@ sub cache_report {
         #
         # Fix this ridiculousness...
         #
-        my $header_column;
+       #my $header_column;
 
-        if ( $header eq 'To' ) {
-            $header_column = 'to_address';
-        } elsif ( $header eq 'From' ) {
-            $header_column = 'from_address';
-        } elsif ( $header eq 'Date' ) {
-            $header_column = 'date';
-        } elsif ( $header eq 'Subject' ) {
-            $header_column = 'subject';
-        } elsif ( $header eq 'Size' ) {
-            $header_column = 'size';
-        } else {
-            $header_column = 'subject';
-        }
+       #if ( $header eq 'TO' ) {
+       #    $header_column = 'TO';
+       #} elsif ( $header eq 'FROM' ) {
+       #    $header_column = 'FROM';
+       #} elsif ( $header eq 'DATE' ) {
+       #    $header_column = 'DATE';
+       #} elsif ( $header eq 'SUBJECT' ) {
+       #    $header_column = 'SUBJECT';
+       #} elsif ( $header eq 'SIZE' ) {
+       #    $header_column = 'SIZE';
+       #} else {
+       #    $header_column = 'SUBJECT';
+       #}
 
-        ddump( 'header_column', $header_column ) if $opts->{debug};
+       #ddump( 'header_column', $header_column ) if $opts->{debug};
 
 
         my $sql = qq[
             SELECT
-                count( $header_column ) AS count_column,
-                to_address,
-                from_address,
-                date,
-                subject,
-                size
+                count( $header ) AS count_column,
+                TO,
+                FROM,
+                DATE,
+                SUBJECT,
+                SIZE
             FROM
                 messages
             WHERE
                 server = ?
                 AND folder = ?
-            GROUP BY $header_column
+            GROUP BY $header
                 HAVING count_column >= 1
             ORDER BY count_column DESC
             LIMIT ?
         ];
 
-        ddump( 'report_by_header_sql',           $sql )            if $opts->{debug};
-        ddump( 'report_by_header_header_column', $header_column )  if $opts->{debug};
-        ddump( 'report_by_header_server',        $opts->{server} ) if $opts->{debug};
-        ddump( 'report_by_header_folder',        $folder )         if $opts->{debug};
-        ddump( 'report_by_header_top',           $opts->{top} )    if $opts->{debug};
+        ddump( 'report_by_header_sql',    $sql )            if $opts->{debug};
+        ddump( 'report_by_header_header', $header )         if $opts->{debug};
+        ddump( 'report_by_header_server', $opts->{server} ) if $opts->{debug};
+        ddump( 'report_by_header_folder', $folder )         if $opts->{debug};
+        ddump( 'report_by_header_top',    $opts->{top} )    if $opts->{debug};
 
         my @results = @{
             $dbh->selectall_arrayref(
@@ -2846,7 +2841,7 @@ sub cache_report {
 
         my $sql = qq[
             SELECT
-                size
+                SIZE
             FROM
                 messages
             WHERE
@@ -2921,7 +2916,7 @@ sub cache_report {
             SELECT
                 folder
             FROM
-                FOLDERS
+                folders
             WHERE
                 server = ?
                 AND validated = 1
@@ -2945,11 +2940,11 @@ sub cache_report {
         my $sql = q[
             SELECT
                 msg_id,
-                to_address,
-                from_address,
-                subject,
-                date,
-                size
+                TO,
+                FROM,
+                SUBJECT,
+                DATE,
+                SIZE
             FROM
                 messages
             WHERE
@@ -2960,11 +2955,11 @@ sub cache_report {
 
        #for ( @{ $dbh->selectall_arrayref( $sql, { Slice => {} }, $value ) } ) {
 
-       #    $msgs->{$_->{msg_id}}->{$header_table{'From'}}    = $_->{from_address};
-       #    $msgs->{$_->{msg_id}}->{$header_table{'Date'}}    = $_->{date};
-       #    $msgs->{$_->{msg_id}}->{$header_table{'Subject'}} = $_->{subject};
-       #    $msgs->{$_->{msg_id}}->{$header_table{'To'}}      = $_->{to_address};
-       #    $msgs->{$_->{msg_id}}->{$header_table{'Size'}}    = $_->{size};
+       #    $msgs->{$_->{msg_id}}->{$header_table{'FROM'}}    = $_->{from_address};
+       #    $msgs->{$_->{msg_id}}->{$header_table{'DATE'}}    = $_->{date};
+       #    $msgs->{$_->{msg_id}}->{$header_table{'SUBJECT'}} = $_->{subject};
+       #    $msgs->{$_->{msg_id}}->{$header_table{'TO'}}      = $_->{to_address};
+       #    $msgs->{$_->{msg_id}}->{$header_table{'SIZE'}}    = $_->{size};
 
        #}
 
@@ -3079,7 +3074,7 @@ sub stripper {
 
     # For from addresses, just grab the address.
     #
-    if ( $name eq 'From' or $name eq 'To' ) {
+    if ( $name eq 'FROM' or $name eq 'TO' ) {
         $field = lc($field);
         my @addrs = Mail::Address->parse($field);
         my $addr_obj = $addrs[0];
@@ -3089,14 +3084,14 @@ sub stripper {
 
     # For Dates, convert to epoch
     #
-    if ( $name eq 'Date' ) {
+    if ( $name eq 'DATE' ) {
         my $epoch = convert_date_to_epoch($field);
         $field = $epoch;
     }
 
     # Strip off the subject cruft...
     #
-    if ( $name eq 'Subject' ) {
+    if ( $name eq 'SUBJECT' ) {
         $field =~ s/^Re:\s+//gi;
         $field =~ s/^Fwd:\s+//gi;
         $field =~ s/\s+Re:\s+//gi;
@@ -3176,7 +3171,7 @@ sub generate_subject_search_string {
 
     return
         join( ' ',
-              "subject:\"$subject\"",
+              "SUBJECT:\"$subject\"",
               $adate,
               $bdate,
               $label );
