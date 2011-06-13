@@ -28,7 +28,7 @@
 use strict;
 use warnings;
 
-# {{{ progress bar
+# {{{ package IMAP::Progress
 #
 # This is just the String::ProgressBar module with one
 # single extra line of code.
@@ -224,7 +224,7 @@ sub _getRotationChar {
 
 # }}}
 
-# {{{ Mail::Address
+# {{{ package Mail::Address
 
 # Copyrights 1995-2011 by Mark Overmeer <perl@overmeer.net>.
 #  For other contributors see ChangeLog.
@@ -502,6 +502,8 @@ sub user
 
 # }}}
 
+# {{{ package main
+#
 package main;
 
 use Data::Dumper;
@@ -687,38 +689,6 @@ use_threaded_mode: $opts->{use_threaded_mode}
 ]);
 
 
-# }}}
-
-# Lazy imap to english translation table
-#
-my %header_table = (
-
-                'Date'                          => 'INTERNALDATE',
-                'INTERNALDATE'                  => 'Date',
-
-                'Subject'                       => 'BODY[HEADER.FIELDS (SUBJECT)]',
-                'BODY[HEADER.FIELDS (SUBJECT)]' => 'Subject',
-
-                'Size'                          => 'RFC822.SIZE',
-                'RFC822.SIZE'                   => 'Size',
-
-                'To'                            => 'BODY[HEADER.FIELDS (TO)]',
-                'BODY[HEADER.FIELDS (TO)]'      => 'To',
-
-                'From'                          => 'BODY[HEADER.FIELDS (FROM)]',
-                'BODY[HEADER.FIELDS (FROM)]'    => 'From',
-
-);
-
-
-print "Using IMAP Server: "
-    . $opts->{server}
-    . ':'
-    . $opts->{port}
-    . "\n"
-    . "Connecting...\n"
-    ;
-
 # Set our global imap options here, so we can append to them individually later
 # as needed.
 #
@@ -754,7 +724,17 @@ if ( $opts->{debug} ) {
 }
 
 
+# {{{ Perform a quick authentication test
+#
 if ( ! $opts->{cache_only} ) {
+
+    print "Using IMAP Server: "
+        . $opts->{server}
+        . ':'
+        . $opts->{port}
+        . "\n"
+        . "Connecting...\n"
+        ;
 
         # Do a quick imap login to make sure we have good credentials.
         #
@@ -781,7 +761,30 @@ if ( ! $opts->{cache_only} ) {
 
         $imap_socket->close( %ssl_socket_options );
 
-}
+} # }}}
+
+# }}}
+
+# Lazy imap to english translation table
+#
+my %header_table = (
+
+                'Date'                          => 'INTERNALDATE',
+                'INTERNALDATE'                  => 'Date',
+
+                'Subject'                       => 'BODY[HEADER.FIELDS (SUBJECT)]',
+                'BODY[HEADER.FIELDS (SUBJECT)]' => 'Subject',
+
+                'Size'                          => 'RFC822.SIZE',
+                'RFC822.SIZE'                   => 'Size',
+
+                'To'                            => 'BODY[HEADER.FIELDS (TO)]',
+                'BODY[HEADER.FIELDS (TO)]'      => 'To',
+
+                'From'                          => 'BODY[HEADER.FIELDS (FROM)]',
+                'BODY[HEADER.FIELDS (FROM)]'    => 'From',
+
+);
 
 # Some global queues used in threaded fetching mode...
 #
@@ -793,11 +796,11 @@ my $reports = report_types();
 #
 my $cache = cache_init( $opts->{cache_file} );
 
-my @imap_folders = fetch_folders({ cache    => $cache,
-                                   filters  => $opts->{filters},
-                                   excludes => $opts->{exclude} });
+#my @imap_folders = fetch_folders({ cache    => $cache,
+#                                   filters  => $opts->{filters},
+#                                   excludes => $opts->{exclude} });
 
-die_clean( 1, "No folders in fetched lists!" ) unless scalar(@imap_folders);
+#die_clean( 1, "No folders in fetched lists!" ) unless scalar(@imap_folders);
 
 # {{{ The main loop...
 #
@@ -815,15 +818,17 @@ while (1) {
         }
 
         my $banner =
-              '(Number of folders in list: '
-            . scalar(@imap_folders)
-            . ")\n\n\n"
-            . "Choose your report type: \n\n\n";
+           #  '(Number of folders in list: '
+           #. scalar(@imap_folders)
+           #. ")\n\n\n"
+           #. 
+            "Choose your report type: \n\n\n";
 
 
         # Choose what type of report we want to run.
         #
-        my $action = $opts->{report}
+        my $action = 
+            $opts->{report}
             ? $reports->{$opts->{report}}
             : choose_action({ banner  => $banner,
                               reports => $reports });
@@ -849,13 +854,12 @@ while (1) {
         } elsif ( $action eq $reports->{size_report} ) {
 
             @report = size_report({ cache => $cache });
-            #@report = messages_by_header_report({ cache => $cache, header => 'Size' });
 
-        } elsif ( $action eq $reports->{folder_message_count_report} ) {
+       #} elsif ( $action eq $reports->{folder_message_count_report} ) {
 
-            @report = folder_message_count_report({ cache => $cache });
+       #    @report = folder_message_count_report({ cache => $cache });
 
-        } elsif ( $action eq $reports->{folder_message_sizes_report} ) {
+       #} elsif ( $action eq $reports->{folder_message_sizes_report} ) {
 
             #@report = folder_message_sizes_report({ cache => $cache });
 
@@ -897,8 +901,6 @@ while (1) {
 
 } # }}}
 
-1;
-
 # {{{ subs
 #
 
@@ -925,11 +927,19 @@ sub report_types {
 
 # {{{ list_folders
 #
-# I'll probably be complicating this further at some point...
+# List the folders directly from the imap server.
 #
 sub list_folders {
 
-    return join( "\n", @imap_folders );
+    my @r;
+
+    push @r, "IMAP server '" . $opts->{server} . "' shows the following folders:\n\n";
+
+    my @imap_folders = imap_folders();
+
+    push @r, "$_\n" for @imap_folders;
+
+    return @r;
 
 }
 
@@ -951,6 +961,8 @@ sub biggest_messages_report {
     my $bmr_cache = $args->{cache};
 
     my $report_type = $reports->{biggest_messages_report};
+
+    my @imap_folders = fetch_folders({ cache => $bmr_cache });
 
     # Now that we know what type of report to run, we need to choose the folder
     # on which we wish to report.
@@ -1039,6 +1051,8 @@ sub size_report {
 
     my @sreport;
 
+    my @imap_folders = fetch_folders({ cache => $sr_cache });
+
     my $folder = folder_choice({ folders     => \@imap_folders,
                                  report_type => $report_type });
 
@@ -1096,8 +1110,28 @@ sub messages_by_header_report {
 
     my @cur_report;
 
-    my $report_type = $reports->{messages_by_from_address_report}
-        if $header eq 'From';
+    my $report_type;
+
+    # TODO
+    #
+    # YUCK.
+    #
+    if ( $header eq 'Subject' ) {
+        $report_type = $reports->{messages_by_subject_report};
+    } elsif ( $header eq 'To' ) {
+        $report_type = $reports->{messages_by_to_address_report};
+    } else {
+
+        # This will be the default header report type...
+        #
+        $report_type = $reports->{messages_by_from_address_report};
+
+    }
+
+    my @imap_folders = fetch_folders({ cache => $mbhr_cache });
+
+    #show_error( "IMAP FOLDERS IS NOW: " . Dumper( \@imap_folders ) );
+
 
     my $folder = folder_choice({ folders => \@imap_folders, report_type => $report_type });
 
@@ -1113,7 +1147,6 @@ sub messages_by_header_report {
 
     my $elapsed = convert_seconds( $finish_time - $start_time );
 
-
     if ( ! $num ) {
         push @cur_report, "\n\n** No messages on which to report for folder: $folder\n\n";
         return @cur_report;
@@ -1122,9 +1155,9 @@ sub messages_by_header_report {
 
     push @cur_report, "\n" x 10;
 
-    push @cur_report, "Total time to fetch messages: $elapsed\n";
-
-    push @cur_report, "\n" x 5 . "Total messages processed: $num\n\n";
+    push @cur_report, "Finished fetching messages for folder '$folder'\n\n";
+    push @cur_report, "Total time to fetch messages: $elapsed\n\n";
+    push @cur_report, "Total messages processed: $num\n\n";
     push @cur_report, 'Top ' . $opts->{top} . " $header addresses: \n\n\n";
 
 
@@ -1136,15 +1169,9 @@ sub messages_by_header_report {
 
     ddump( 'msgs', $msgs ) if $opts->{debug};
 
-
-    for (
-        tabulator({
-                    rows    => $msgs,
-                    columns => [qw/Count Folder MessageId To From Date Subject Size/]
-                 })
-        ) {
-        push @cur_report, $_ . "\n";
-    }
+    push @cur_report, $_
+        for tabulator({ rows    => $msgs,
+                        columns => [qw/Count To From Date Subject Size/] });
 
     push @cur_report, "\n\n\n";
 
@@ -1177,6 +1204,8 @@ sub folder_message_count_report {
     my $total_num_messages = 0;
     my $folders_counted = 0;
 
+    my @imap_folders = fetch_folders({ cache => $fmcr_cache });
+
     my $num_folders = scalar(@imap_folders);
 
     my $bar = IMAP::Progress->new( max => $num_folders, length => 10 );
@@ -1197,7 +1226,7 @@ sub folder_message_count_report {
             # beginning of the script, but, just to be safe in case anything was
             # modified during the runtime of this script...
             #
-            if ( ! check_cache({ cache => $fmcr_cache, content_type => 'validated_folder_list', value => $_ }) ) {
+            if ( ! cache_check({ cache => $fmcr_cache, content_type => 'validated_folder_list', value => $_ }) ) {
 
                 if ( ! $fmcr_imap->exists($_) ) {
                     show_error( "Error: $_ not a valid folder: $@\nLastError: " . $fmcr_imap->LastError );
@@ -1209,7 +1238,7 @@ sub folder_message_count_report {
             # Try to get the count of messages from cache,
             # otherwise get the count manually.
             #
-            my $count = check_cache({ cache => $fmcr_cache, content_type => 'message_count', value => $_ });
+            my $count = cache_check({ cache => $fmcr_cache, content_type => 'message_count', value => $_ });
 
             if ( ! $count ) {
 
@@ -1265,6 +1294,8 @@ sub folder_message_sizes_report {
     my $fmsr_cache = $args->{cache};
 
     my $report_type = $reports->{folder_message_sizes_report};
+
+    my @imap_folders = fetch_folders({ cache => $fmsr_cache });
 
     # Extra press-enter-to-continue prompts to make damn sure that we understand
     # that this is long, heavy operation on a mailbox with a ton of messages.
@@ -1464,7 +1495,7 @@ sub tabulator {
     #
     for ( @$rows ) {
         my $cur_row = sprintf( $format, @$_ );
-        push @tabbed, $cur_row;
+        push @tabbed, $cur_row . "\n";
     }
 
     return @tabbed;
@@ -1514,18 +1545,6 @@ sub fetch_folders {
 
     my $args = shift;
 
-    my $filter_list   =
-        $args->{filters}
-        ? $args->{filters}
-        : []
-        ;
-
-    my $excludes_list =
-        $args->{excludes}
-        ? $args->{excludes}
-        : []
-        ;
-
     my $ff_cache = $args->{cache};
 
     return unless $ff_cache;
@@ -1533,83 +1552,169 @@ sub fetch_folders {
     my $list         = [];
     my $menu_folders = [];
 
-    $list = check_cache({ cache => $ff_cache, content_type => 'folder_list' });
+    $list = cache_check({ cache => $ff_cache, content_type => 'folder_list' });
 
-    {
+    my @filtered_cached;
+    my $cached_count;
 
-        my ( $ff_socket, $ff_imap );
+    if ( scalar(@$list) ) {
 
-        if ( ! $list && ! $opts->{cache_only} ) {
+        @filtered_cached = filter_folders({ folders => $list });
 
-            $ff_socket = create_ssl_socket( 'ff_socket' );
-
-            $ff_imap = Mail::IMAPClient->new( %imap_options, Socket => $ff_socket )
-                or die "Cannot connect to host : $@";
-
-            $list = $ff_imap->folders
-                or die_clean( 1, "Error fetching folders: $!\n" . $ff_imap->LastError );
-
-            put_cache({ cache => $ff_cache, content_type => 'folder_list', values => $list });
-
-        }
-
-        print "Processing list of IMAP folders...\n";
-
-        # Here's where we filter out what we want from the list of folders.
-        #
-        my @filtered_list =
-                            grep { my $item = $_; not grep { $item =~ m/$_/i } @$excludes_list }
-            @$filter_list ? grep { my $item = $_;     grep { $item =~ m/$_/i } @$filter_list   } @$list : @$list;
-
-        return @filtered_list if $opts->{cache_only};
-
-        # Run the exists method on the folder to compensate for the odd behavior
-        # that can come from using nested gmail labels.
-        #
-        my $max = scalar(@filtered_list);
-
-        die_clean( 1, "No folders..." ) unless $max;
-
-        my $bar = IMAP::Progress->new( max => $max, length => 10 );
-        my $counter= 1;
-
-        for my $ff ( @filtered_list ) {
-
-            # The force option is allowed to short circuit the imap->exists
-            # method...
-            #
-            if ( $opts->{force} || check_cache({ cache => $ff_cache, content_type => 'validated_folder_list', value => $ff }) ) {
-
-                push @$menu_folders, $ff;
-
-            } else {
-
-                if ( $ff_imap->exists($ff) ) {
-
-                    $bar->info( "Sent: " . $ff_imap->Transaction . " STATUS \"$ff\"" );
-
-                    push @$menu_folders, $ff;
-                    put_cache({ cache => $ff_cache, content_type => 'validated_folder_list', folder => $ff });
-
-                } else {
-
-                    $bar->info('');
-
-                }
-
-            }
-
-            $bar->update( $counter++ );
-            $bar->write;
-
-        }
-
-        $ff_imap->disconnect;
-        $ff_socket->close( %ssl_socket_options );
+        $cached_count = scalar(@filtered_cached);
 
     }
 
-    return @$menu_folders;
+    if ( $opts->{cache_only} ) {
+
+        if ( ! scalar(@filtered_cached) ) {
+            die_clean( 1, "No folders..." );
+        }
+
+        return @filtered_cached;
+
+    }
+
+    my @imap_list;
+
+    @imap_list = imap_folders();
+
+    if ( ! scalar @imap_list ) {
+        die_clean( 1, "No folders..." );
+    }
+
+    my @filtered_imap = filter_folders({ folders => \@imap_list });
+
+    if ( ! scalar @filtered_imap ) {
+        die_clean( 1, "No folders..." );
+    }
+
+    my $imap_count = scalar(@filtered_imap);
+
+    if ( $cached_count == $imap_count ) {
+        return @filtered_imap;
+    }
+
+    print "Processing list of IMAP folders...\n";
+
+    my @valid_list = validate_folders({ folders => \@filtered_imap });
+
+    for ( @valid_list ) {
+        cache_put({ cache => $ff_cache, content_type => 'validated_folder_list', folder => $_ });
+    }
+
+    return @valid_list;
+
+} # }}}
+
+# {{{ validate_folders
+#
+sub validate_folders {
+
+    my $args = shift;
+    
+    my $folders  = $args->{folders};
+
+    return unless $folders;
+
+    my $vf_socket = create_ssl_socket( 'vf_socket' );
+
+    my $vf_imap = Mail::IMAPClient->new( %imap_options, Socket => $vf_socket )
+        or die "Cannot connect to host : $@";
+
+
+    # Run the exists method on the folder to compensate for the odd behavior
+    # that can come from using nested gmail labels.
+    #
+    my $max = scalar(@$folders);
+
+    my $bar = IMAP::Progress->new( max => $max, length => 10 );
+    my $counter= 1;
+
+    my @validated_folders;
+
+    for my $folder ( @$folders ) {
+
+        $bar->info( "Sent: " . $vf_imap->Transaction . " STATUS \"$folder\"" );
+
+        if ( $vf_imap->exists($folder) ) {
+            push @validated_folders, $folder;
+        }
+
+        $bar->update( $counter++ );
+        $bar->write;
+
+    }
+
+    return @validated_folders;
+
+}
+
+# }}}
+
+# {{{ imap_folders
+#
+sub imap_folders {
+    
+    my $if_socket = create_ssl_socket( 'if_socket' );
+
+    my $if_imap = Mail::IMAPClient->new( %imap_options, Socket => $if_socket )
+        or die "Cannot connect to host : $@";
+
+
+    verbose( "Fetching folder list from IMAP server..." );
+
+    $if_socket = create_ssl_socket( 'if_socket' );
+
+    $if_imap = Mail::IMAPClient->new( %imap_options, Socket => $if_socket )
+        or die_clean( 1, "Cannot connect to host : $@" );
+
+    my $list = $if_imap->folders
+        or die_clean( 1, "Error fetching folders: $!\n" . $if_imap->LastError );
+
+    $if_imap->disconnect;
+    $if_socket->close( %ssl_socket_options );
+
+    return @$list;
+
+}
+
+# }}}
+
+# {{{ filter_folders
+#
+sub filter_folders {
+
+    my $args = shift;
+
+    my $list = $args->{folders};
+
+    return unless $list;
+
+    my $filter_list =
+        $opts->{filters}
+        ? $opts->{filters}
+        : []
+        ;
+
+    my $excludes_list =
+        $opts->{exclude}
+        ? $opts->{exclude}
+        : []
+        ;
+
+    # Some hard coded excludes...
+    #
+    my @extra_excludes = qw/[Gmail]/;
+
+    # Here's where we filter out what we want from the list of folders.
+    #
+    my @filtered_list =
+                        grep { my $item = $_; not grep { $item eq $_     } @extra_excludes }
+                        grep { my $item = $_; not grep { $item =~ m/$_/i } @$excludes_list }
+        @$filter_list ? grep { my $item = $_;     grep { $item =~ m/$_/i } @$filter_list   } @$list : @$list;
+
+    return @filtered_list;
 
 } # }}}
 
@@ -1639,7 +1744,7 @@ sub fetch_messages {
     #
     push @headers, $header_table{$_} for qw/Date Subject Size To From/;
 
-    my $cached_count = check_cache({ cache => $f_cache, content_type => 'fetched_messages', value => $folder });
+    my $cached_count = cache_check({ cache => $f_cache, content_type => 'fetched_messages', value => $folder });
 
     return $cached_count if $opts->{cache_only};
 
@@ -1759,7 +1864,7 @@ sub fetch_messages {
     #
     print "Storing messages in cache...\n";
 
-    put_cache({ cache => $f_cache, content_type => 'fetched_messages', folder => $folder, values => $fetched });
+    cache_put({ cache => $f_cache, content_type => 'fetched_messages', folder => $folder, values => $fetched });
 
     $f_imap->disconnect;
 
@@ -2094,6 +2199,799 @@ sub create_ssl_socket {
 
 # }}}
 
+# {{{ Cache operations
+
+# {{{  cache_init
+#
+# Crude implementation of a cache using SQLite
+#
+sub cache_init {
+
+    my $cfile = shift;
+
+    unless ( eval 'require DBI; import DBI; require DBD::SQLite; import DBD::SQLite; 1;' ) {
+        die_clean( 1, "DBI and DBD::SQLite perl modules required." );
+        return;
+    }
+
+    my $is_new_db =
+        -s $cfile
+        ? 0
+        : 1
+        ;
+
+    my $dsn = "dbi:SQLite:dbname=$cfile";
+
+    my $c;
+
+    my $err;
+
+    my $dbh = DBI->connect( $dsn, '', '' )
+        or $err = 1;
+
+    if ( $err ) {
+        warn "Unable to init cache db: $!\n";
+        return;
+    }
+
+    $dbh->do('PRAGMA cache_size = 16384;');
+    $dbh->do('PRAGMA page_size = 2048;');
+    $dbh->do('PRAGMA temp_store = 2;');
+    $dbh->do('PRAGMA synchronous = 0;');
+
+    if ( $is_new_db ) {
+
+        my $sql = q[
+
+            CREATE TABLE folders (
+                id              INTEGER PRIMARY KEY,
+                server          TEXT NOT NULL,
+                folder          TEXT UNIQUE NOT NULL,
+                msg_count       INTEGER,
+                validated       BOOLEAN,
+                last_update     INTEGER
+            );
+        ];
+
+        my $sth = $dbh->prepare( $sql );
+
+        my $err = $sth->execute;
+
+        $sql = q[
+
+            CREATE TABLE messages (
+                server          TEXT NOT NULL,
+                folder          TEXT NOT NULL,
+                msg_id          INTEGER NOT NULL PRIMARY KEY,
+                to_address      TEXT,
+                from_address    TEXT,
+                subject         TEXT,
+                date            INTEGER NOT NULL,
+                size            INTEGER NOT NULL,
+                last_update     INTEGER
+            );
+
+        ];
+
+        $sth = $dbh->prepare( $sql );
+
+        $err = $sth->execute();
+
+    }
+
+    $dbh->{AutoCommit} = 1;
+
+    return $dbh;
+
+} # }}}
+
+# {{{ cache_check
+#
+# My crude method of a caching mechanism.
+#
+# Feed this function the type of content and value for which to look.  Returns
+# cached elements based on the different types of information, arrayrefs,
+# hashrefs, bools, etc.
+#
+# TODO
+#
+# Implement cache aging
+#
+sub cache_check {
+
+    my $args = shift;
+
+    my $dbh          = $args->{cache};
+    my $content_type = $args->{content_type};
+    my $value        = defined $args->{value} ? $args->{value} : '';
+
+    my $cur_time = time;
+
+    if ( $content_type eq 'folder_list' ) {
+
+        # {{{ folder_list cache check
+
+        # Checks the cached list of folders and returns an arrayref list of
+        # them.
+
+        cache_prune({ cache        => $dbh,
+                      content_type => $content_type });
+
+        # If we're in cache_only mode, instead of grabbing the stored list of
+        # folders, we'll create a list of folders from the actual messages
+        # stored in the cache.
+        #
+        my $sql = 
+            $opts->{cache_only}
+            ? q[
+                    SELECT DISTINCT
+                        folder
+                    FROM
+                        messages
+                    WHERE
+                        server = ?
+              ]
+
+            : q[
+
+                    SELECT
+                        folder
+                    FROM
+                        folders
+                    WHERE
+                        server = ?
+                        AND validated = 1
+
+               ]
+            ;
+
+        my $folderlist = [];
+
+        push @$folderlist, $_->{folder}
+            for @{ $dbh->selectall_arrayref( $sql, { Slice => {} },
+                                             $opts->{server} ) };
+
+        #show_error( "cache_check_returning_folder_list: " . Dumper( $folderlist ) );
+
+        if ( scalar(@$folderlist) ) {
+            return $folderlist;
+        } else {
+            return;
+        }
+
+        # }}}
+
+    } elsif ( $content_type eq 'validated_folder_list' ) {
+
+        # {{{ validated folder cache check
+
+        # The list of VALIDATED folders is cached separately.  This just returns
+        # a true/false if a folder appears in the list of validated folders.
+        # (Validated folders have passed a test using the 'exists' method.)
+        #
+        return unless defined $value && $value;
+
+
+        my $sql = q[
+            SELECT
+                folder
+            FROM
+                FOLDERS
+            WHERE
+                server = ?
+                AND validated = 1
+
+        ];
+
+        my $results = [];
+
+        push @$results, $_->{folder}
+            for @{ $dbh->selectall_arrayref( $sql, { Slice => {} },
+                                             $opts->{server} ) };
+        return $results->[0];
+
+                # }}}
+
+    } elsif ( $content_type eq 'fetched_messages' ) {
+
+        # {{{ fetched messages cache check
+
+        return unless defined $value && $value;
+
+        my $sql = q[
+            SELECT
+                count(msg_id)
+            FROM
+                messages
+            WHERE
+                server = ?
+                AND folder = ?
+        ];
+
+        my $sth = $dbh->prepare( $sql );
+
+        $sth->execute( $opts->{server}, $value );
+
+        my $count = $sth->fetch;
+
+        return 
+            $count->[0]
+            ? $count->[0]
+            : 0
+            ;
+
+        # }}}
+
+    } elsif ( $content_type eq 'message_count' ) {
+
+        # {{{ cached message count check
+
+        # This looks into the cache of messages and if messages have been
+        # cached, returns the count of the number of messages stored there.
+        # Folder message counts themselves are not actually cached.
+        #
+
+        return unless defined $value && $value;
+
+        if ( defined $cache->{ $opts->{server} }->{imap_folders}->{fetched_messages}->{$value}->{messages}
+             && ref $cache->{ $opts->{server} }->{imap_folders}->{fetched_messages}->{$value}->{messages} eq 'HASH' ) {
+
+            my $result = scalar( keys %{ $cache->{ $opts->{server} }->{imap_folders}->{fetched_messages}->{$value}->{messages} } );
+
+            return $result;
+
+        }
+
+        # }}}
+
+    }
+
+    return;
+
+} # }}}
+
+# {{{ cache_put
+#
+# Handle inserting the various types of information we want to cache.
+#
+# Sticks in the current time value so for cache aging purposes later.
+#
+sub cache_put {
+
+    my $args = shift;
+
+    my $dbh          = $args->{cache};
+    my $content_type = $args->{content_type};
+    my $values       = $args->{values};
+    my $folder       = $args->{folder};
+
+    return unless $dbh;
+    return unless $content_type;
+
+    if ( $content_type eq 'folder_list' ) {
+
+        # {{{ folder_list cache population
+
+        return unless ref $values eq 'ARRAY';
+
+        $dbh->begin_work;
+
+        my $sql = q[
+
+            INSERT INTO folders (
+                server,
+                folder,
+                last_update
+            ) VALUES (
+                ?,
+                ?,
+                ?
+            )
+
+        ];
+
+        my $cur_time = time;
+
+        for my $cur_folder (@$values) {
+
+            my $sth = $dbh->prepare($sql);
+
+            $sth->execute( $opts->{server}, $cur_folder, $cur_time );
+
+            print "Inserted into DB: " . $opts->{server} . ' ' . $cur_folder . ' ' . $cur_time . "\n" if $opts->{verbose};
+
+        }
+
+        $dbh->commit;
+
+        # }}}
+
+    } elsif ( $content_type eq 'validated_folder_list' ) {
+
+        # {{{ validated folder list cache population
+
+        return unless $folder;
+        return if ref $folder;
+
+        $dbh->begin_work;
+
+        my $sql = q[
+            INSERT OR REPLACE INTO folders (
+                server,
+                folder,
+                validated,
+                last_update
+            ) VALUES (
+                ?,
+                ?,
+                ?,
+                ?
+            )
+        ];
+
+        my $sth = $dbh->prepare($sql);
+
+        my $err;
+
+        $sth->execute( $opts->{server}, $folder, 1, time )
+            or $err = 1;
+
+        if ( $err ) {
+            warn "Error caching validated folder: $!\n";
+            $dbh->rollback;
+            return;
+        }
+
+        $dbh->commit;
+
+        # }}}
+
+    } elsif ( $content_type eq 'fetched_messages' ) {
+
+        # {{{ fetched message cash population
+
+        return unless ref $values eq 'HASH';
+        return unless $folder;
+
+        $dbh->begin_work;
+
+        my $sql = q[
+            INSERT OR REPLACE INTO messages (
+                server,
+                msg_id,
+                folder,
+                to_address,
+                from_address,
+                subject,
+                date,
+                size,
+                last_update
+            ) VALUES (
+                ?,
+                ?,
+                ?,
+                ?,
+                ?,
+                ?,
+                ?,
+                ?,
+                ?
+            )
+        ];
+
+        my $mcount = scalar( keys %$values );
+
+        my $cbar = IMAP::Progress->new( max    => $mcount,
+                                        length => 10 );
+
+        $cbar->text('Caching:');
+        $cbar->info('messages');
+
+        my $counter = 0;
+
+        $cbar->update( $counter++ );
+        $cbar->write;
+
+        my $sth = $dbh->prepare($sql);
+
+        my $in_time = time;
+
+        for ( keys %$values ) {
+            my $result = $sth->execute(
+                $opts->{server},
+                $_,
+                $folder,
+                $values->{$_}->{ $header_table{To} },
+                $values->{$_}->{ $header_table{From} },
+                $values->{$_}->{ $header_table{Subject} },
+                $values->{$_}->{ $header_table{Date} },
+                $values->{$_}->{ $header_table{Size} },
+                $in_time
+            );
+
+            if ( $dbh->errstr ) {
+                warn "Message cache insert error: " . $dbh->errstr . "\n";
+                $dbh->rollback;
+                return;
+            }
+
+            #if ( ( ( $counter % 10 ) + 1 ) == 10 ) {
+                $cbar->update( $counter++ );
+                $cbar->write;
+            #}
+
+        }
+
+        $dbh->commit;
+
+        # }}}
+
+    }
+
+    return;
+
+} # }}}
+
+# {{{ cache_prune
+#
+sub cache_prune {
+
+    return if $opts->{cache_only};
+
+    my $args = shift;
+
+    my $content_type = $args->{content_type};
+    my $dbh          = $args->{cache};
+
+    return unless $content_type;
+    return unless $dbh;
+
+    my $cur_time = time;
+    my $max_age  = $cur_time - $opts->{cache_age};
+
+    if ( $content_type eq 'folder_list' ) {
+
+        my $sql = q[
+            DELETE FROM
+                folders
+            WHERE
+                server = ?
+                AND last_update < ?
+        ];
+
+        my $sth = $dbh->prepare( $sql );
+
+        my $result = $sth->execute( $opts->{server}, $max_age );
+
+    }
+
+    return;
+
+}
+
+# }}}
+
+# {{{ cache_report
+#
+# Here's where we're going to start generating our reports.
+#
+# Expects to receive an anon hashref contain the cache (dbh) object, type of
+# report we want to run, the name of the folder, and the header to be used for
+# sorting operations in the reports.
+#
+sub cache_report {
+
+    my $args = shift;
+
+    my $dbh          = $args->{cache};
+    my $folder       = $args->{folder};
+    my $report_type  = $args->{report_type};
+
+    return unless $folder;
+
+    if ( $report_type eq 'report_by_size' ) {
+
+        # {{{ report by size
+
+        my $sql = q[
+            SELECT
+                folder,
+                msg_id,
+                to_address,
+                from_address,
+                date,
+                subject,
+                size
+            FROM
+                messages
+            WHERE
+                server = ?
+                AND folder = ?
+            ORDER BY size DESC
+            LIMIT ?
+        ];
+
+
+
+        my @results = @{
+            $dbh->selectall_arrayref(
+                                      $sql,
+                                      {},
+                                      $opts->{server},
+                                      $folder,
+                                      $opts->{top} )};
+
+
+        ddump( 'selectall_results', @results ) if $opts->{debug};
+
+        my $messages = [];
+
+        push @$messages, [
+                           $_->[0],                     # folder
+                           $_->[1],                     # msg_id
+                           $_->[2],                     # to_address
+                           $_->[3],                     # from_address
+                           scalar localtime $_->[4],    # date
+                           $_->[5],                     # subject
+                           convert_bytes( $_->[6] )     # size
+                         ] for @results;
+
+        ddump( 'header report of collected messages', $messages ) if $opts->{debug};
+
+        return $messages;
+
+        # }}}
+
+    } elsif ( $report_type eq 'report_by_header' ) {
+
+        # {{{ report by header
+
+        my $header = $args->{header};
+
+        if ( ! $header ) {
+            show_error( "Invalid header: $header" );
+            return;
+        }
+
+        if ( ! $folder ) {
+            show_error( "Invalid folder: $folder" );
+            return;
+        }
+
+        # TODO
+        #
+        # Fix this ridiculousness...
+        #
+        my $header_column;
+
+        if ( $header eq 'To' ) {
+            $header_column = 'to_address';
+        } elsif ( $header eq 'From' ) {
+            $header_column = 'from_address';
+        } elsif ( $header eq 'Date' ) {
+            $header_column = 'date';
+        } elsif ( $header eq 'Subject' ) {
+            $header_column = 'subject';
+        } elsif ( $header eq 'Size' ) {
+            $header_column = 'size';
+        } else {
+            $header_column = 'subject';
+        }
+
+        ddump( 'header_column', $header_column ) if $opts->{debug};
+
+
+        my $sql = qq[
+            SELECT
+                count( $header_column ) AS count_column,
+                to_address,
+                from_address,
+                date,
+                subject,
+                size
+            FROM
+                messages
+            WHERE
+                server = ?
+                AND folder = ?
+            GROUP BY $header_column
+                HAVING count_column >= 1
+            ORDER BY count_column DESC
+            LIMIT ?
+        ];
+
+        ddump( 'report_by_header_sql',           $sql )            if $opts->{debug};
+        ddump( 'report_by_header_header_column', $header_column )  if $opts->{debug};
+        ddump( 'report_by_header_server',        $opts->{server} ) if $opts->{debug};
+        ddump( 'report_by_header_folder',        $folder )         if $opts->{debug};
+        ddump( 'report_by_header_top',           $opts->{top} )    if $opts->{debug};
+
+        my @results = @{
+            $dbh->selectall_arrayref(
+                                      $sql,
+                                      {},
+                                      $opts->{server},
+                                      $folder,
+                                      $opts->{top}
+                                    )
+            };
+
+        ddump( 'selectall_results', @results ) if $opts->{debug};
+
+        my $messages = [];
+
+        push @$messages, [
+                           $_->[0],                     # count_column
+                           $_->[1],                     # to_address
+                           $_->[2],                     # from_address
+                           scalar localtime $_->[3],    # date
+                           $_->[4],                     # subject
+                           convert_bytes( $_->[5] ),    # size
+                         ] for @results;
+
+        ddump( 'header report of collected messages', $messages ) if $opts->{debug};
+
+        return $messages;
+
+        # }}}
+
+    } elsif ( $report_type eq 'total_folder_size' ) {
+
+        # {{{ Total size of messages in folder
+
+        if ( ! $folder ) {
+            show_error( "Invalid folder: $folder" );
+            return;
+        }
+
+        my $sql = qq[
+            SELECT
+                size
+            FROM
+                messages
+            WHERE
+                server = ?
+                AND folder = ?
+        ];
+
+        my @results = @{
+            $dbh->selectall_arrayref(
+                                      $sql,
+                                      {},
+                                      $opts->{server},
+                                      $folder
+                                    )
+            };
+
+        ddump( 'selectall_results', @results ) if $opts->{debug};
+
+        my $messages = [];
+
+        push @$messages, [ $_->[0] ] for @results;
+
+        ddump( 'size report of collected messages', $messages ) if $opts->{debug};
+
+        return $messages;
+
+        # }}}
+
+    } elsif ( $report_type eq 'folder_list' ) {
+
+        # {{{ folder_list cache check
+
+        # Checks the cached list of folders and returns an arrayref list of
+        # them.
+
+
+        my $sql = q[
+
+            SELECT
+                folder
+            FROM
+                folders
+            WHERE
+                server = ?
+
+        ];
+
+        my $folderlist = [];
+
+        push @$folderlist, $_->{folder}
+            for @{ $dbh->selectall_arrayref( $sql, { Slice => {} },
+                                             $opts->{server} ) };
+
+        if ( scalar(@$folderlist) ) {
+            return $folderlist;
+        } else {
+            return;
+        }
+
+        # }}}
+
+    } elsif ( $report_type eq 'validated_folder_list' ) {
+
+        # {{{ validated folder cache check
+
+        # The list of VALIDATED folders is cached separately.  This just returns
+        # a true/false if a folder appears in the list of validated folders.
+        # (Validated folders have passed a test using the 'exists' method.)
+        #
+
+        my $sql = q[
+            SELECT
+                folder
+            FROM
+                FOLDERS
+            WHERE
+                server = ?
+                AND validated = 1
+
+        ];
+
+        my $results = [];
+
+        push @$results, $_->{folder}
+            for @{ $dbh->selectall_arrayref( $sql, { Slice => {} },
+                                             $opts->{server} ) };
+
+        return $results->[0];
+
+        # }}}
+
+    } elsif ( $report_type eq 'fetched_messages' ) {
+
+        # {{{ fetched messages cache check
+
+        my $sql = q[
+            SELECT
+                msg_id,
+                to_address,
+                from_address,
+                subject,
+                date,
+                size
+            FROM
+                messages
+            WHERE
+                folder = ?
+        ];
+
+        my $msgs = {};
+
+       #for ( @{ $dbh->selectall_arrayref( $sql, { Slice => {} }, $value ) } ) {
+
+       #    $msgs->{$_->{msg_id}}->{$header_table{'From'}}    = $_->{from_address};
+       #    $msgs->{$_->{msg_id}}->{$header_table{'Date'}}    = $_->{date};
+       #    $msgs->{$_->{msg_id}}->{$header_table{'Subject'}} = $_->{subject};
+       #    $msgs->{$_->{msg_id}}->{$header_table{'To'}}      = $_->{to_address};
+       #    $msgs->{$_->{msg_id}}->{$header_table{'Size'}}    = $_->{size};
+
+       #}
+
+        return $msgs;
+
+        # }}}
+
+    } elsif ( $report_type eq 'message_count' ) {
+
+        # {{{ cached message count check
+
+        # This looks into the cache of messages and if messages have been
+        # cached, returns the count of the number of messages stored there.
+        # Folder message counts themselves are not actually cached.
+        #
+
+
+        # }}}
+
+    }
+
+    return;
+
+} # }}}
+
+# }}}
+
 # {{{ Message processing
 
 # {{{ threaded_sequence_chunker
@@ -2410,7 +3308,7 @@ sub convert_seconds {
 
     my $seconds = shift;
 
-    return unless $seconds;
+    return '0 seconds' unless $seconds;
 
     my $days  = int( $seconds / ( 24 * 60 * 60 ) );
     my $hours = ( $seconds / ( 60 * 60 ) ) % 24;
@@ -2482,10 +3380,10 @@ sub folder_choice {
     my $folders = $args->{folders};
     my $type    = $args->{report_type};
 
-    my $fc_socket = create_ssl_socket( 'fc_socket' );
+   #my $fc_socket = create_ssl_socket( 'fc_socket' );
 
-    my $fc_imap = Mail::IMAPClient->new( %imap_options, Socket => $fc_socket )
-        or die "Cannot connect to host : $@";
+   #my $fc_imap = Mail::IMAPClient->new( %imap_options, Socket => $fc_socket )
+   #    or die "Cannot connect to host : $@";
 
 
     # Here's where we call to our picker function which uses
@@ -2504,34 +3402,34 @@ sub folder_choice {
     # get a valid folder name, but this should at least catch it if there is a
     # foldername with odd characters.
     #
-    if ( ! $fc_imap->exists($choice) ) {
+#   if ( ! $fc_imap->exists($choice) ) {
 
-        $fc_imap->noop or $fc_imap->reconnect
-            or warn "IMAP Error during reconnect: " . $fc_imap->LastError;
+#       $fc_imap->noop or $fc_imap->reconnect
+#           or warn "IMAP Error during reconnect: " . $fc_imap->LastError;
 
-        #$imap->examine
+#       #$imap->examine
 
-        if ( ! $fc_imap->exists($choice) ) {
+#       if ( ! $fc_imap->exists($choice) ) {
 
-            show_error( "Error: $choice not a valid folder.\n\nRaw IMAP error output: \n" . $fc_imap->LastError );
-            return;
+#           show_error( "Error: $choice not a valid folder.\n\nRaw IMAP error output: \n" . $fc_imap->LastError );
+#           return;
 
-        }
+#       }
 
-    }
+#   }
 
     # The examine method is a read-only version of select.
     # The act of iterating a folder on an imap server can
     # affect the status of messages and we want this to be a
     # completely transparent function.
     #
-    $fc_imap->examine($choice)
-        or show_error( "Error: Error selecting folder: ${choice}...\n" . $fc_imap->LastError );
+#   $fc_imap->examine($choice)
+#       or show_error( "Error: Error selecting folder: ${choice}...\n" . $fc_imap->LastError );
 
-    print "\n\n Folder selected: '$choice'\n\n\n";
+#   print "\n\n Folder selected: '$choice'\n\n\n";
 
-    $fc_imap->disconnect;
-    $fc_socket->close( %ssl_socket_options );
+#   $fc_imap->disconnect;
+#   $fc_socket->close( %ssl_socket_options );
 
     return $choice;
 
@@ -2579,797 +3477,6 @@ sub show_folder_picker {
 
     return $choice;
 
-
-} # }}}
-
-# }}}
-
-# {{{ Cache operations
-
-# {{{  cache_init
-#
-# Crude implementation of a cache using SQLite
-#
-sub cache_init {
-
-    my $cfile = shift;
-
-    unless ( eval 'require DBI; import DBI; require DBD::SQLite; import DBD::SQLite; 1;' ) {
-        die_clean( 1, "DBI and DBD::SQLite perl modules required." );
-        return;
-    }
-
-    my $is_new_db =
-        -s $cfile
-        ? 0
-        : 1
-        ;
-
-    my $dsn = "dbi:SQLite:dbname=$cfile";
-
-    my $c;
-
-    my $err;
-
-    my $dbh = DBI->connect( $dsn, '', '' )
-        or $err = 1;
-
-    if ( $err ) {
-        warn "Unable to init cache db: $!\n";
-        return;
-    }
-
-    $dbh->do('PRAGMA cache_size = 16384;');
-    $dbh->do('PRAGMA page_size = 2048;');
-    $dbh->do('PRAGMA temp_store = 2;');
-    $dbh->do('PRAGMA synchronous = 0;');
-
-    if ( $is_new_db ) {
-
-        my $sql = q[
-
-            CREATE TABLE folders (
-                id              INTEGER PRIMARY KEY,
-                server          TEXT NOT NULL,
-                folder          TEXT UNIQUE NOT NULL,
-                msg_count       INTEGER,
-                validated       BOOLEAN,
-                last_update     INTEGER
-            );
-        ];
-
-        my $sth = $dbh->prepare( $sql );
-
-        my $err = $sth->execute;
-
-        $sql = q[
-
-            CREATE TABLE messages (
-                server          TEXT NOT NULL,
-                folder          TEXT NOT NULL,
-                msg_id          INTEGER NOT NULL PRIMARY KEY,
-                to_address      TEXT,
-                from_address    TEXT,
-                subject         TEXT,
-                date            INTEGER NOT NULL,
-                size            INTEGER NOT NULL,
-                last_update     INTEGER
-            );
-
-        ];
-
-        $sth = $dbh->prepare( $sql );
-
-        $err = $sth->execute();
-
-    }
-
-    $dbh->{AutoCommit} = 1;
-
-    return $dbh;
-
-} # }}}
-
-# {{{ check_cache
-#
-# My crude method of a caching mechanism.
-#
-# Feed this function the type of content and value for which to look.  Returns
-# cached elements based on the different types of information, arrayrefs,
-# hashrefs, bools, etc.
-#
-# TODO
-#
-# Implement cache aging
-#
-sub check_cache {
-
-    my $args = shift;
-
-    my $dbh          = $args->{cache};
-    my $content_type = $args->{content_type};
-    my $value        = defined $args->{value} ? $args->{value} : '';
-
-    my $cur_time = time;
-
-    if ( $content_type eq 'folder_list' ) {
-
-        # {{{ folder_list cache check
-
-        # Checks the cached list of folders and returns an arrayref list of
-        # them.
-
-        cache_prune({ cache        => $dbh,
-                      content_type => $content_type });
-
-        
-        my $sql = 
-            $opts->{cache_only}
-            ? q[
-                    SELECT DISTINCT
-                        folder
-                    FROM
-                        messages
-                    WHERE
-                        server = ?
-              ]
-
-            : q[
-
-                    SELECT
-                        folder
-                    FROM
-                        folders
-                    WHERE
-                        server = ?
-
-               ]
-            ;
-
-        my $folderlist = [];
-
-        push @$folderlist, $_->{folder}
-            for @{ $dbh->selectall_arrayref( $sql, { Slice => {} },
-                                             $opts->{server} ) };
-
-        if ( scalar(@$folderlist) ) {
-            return $folderlist;
-        } else {
-            return;
-        }
-
-        # }}}
-
-    } elsif ( $content_type eq 'validated_folder_list' ) {
-
-        # {{{ validated folder cache check
-
-        # The list of VALIDATED folders is cached separately.  This just returns
-        # a true/false if a folder appears in the list of validated folders.
-        # (Validated folders have passed a test using the 'exists' method.)
-        #
-        return unless defined $value && $value;
-
-
-        my $sql = q[
-            SELECT
-                folder
-            FROM
-                FOLDERS
-            WHERE
-                server = ?
-                AND validated = 1
-
-        ];
-
-        my $results = [];
-
-        push @$results, $_->{folder}
-            for @{ $dbh->selectall_arrayref( $sql, { Slice => {} },
-                                             $opts->{server} ) };
-        return $results->[0];
-
-                # }}}
-
-    } elsif ( $content_type eq 'fetched_messages' ) {
-
-        # {{{ fetched messages cache check
-
-        return unless defined $value && $value;
-
-        my $sql = q[
-            SELECT
-                count(msg_id)
-            FROM
-                messages
-            WHERE
-                server = ?
-                AND folder = ?
-        ];
-
-        my $sth = $dbh->prepare( $sql );
-
-        $sth->execute( $opts->{server}, $value );
-
-        my $count = $sth->fetch;
-
-        return 
-            $count->[0]
-            ? $count->[0]
-            : 0
-            ;
-
-        # }}}
-
-    } elsif ( $content_type eq 'message_count' ) {
-
-        # {{{ cached message count check
-
-        # This looks into the cache of messages and if messages have been
-        # cached, returns the count of the number of messages stored there.
-        # Folder message counts themselves are not actually cached.
-        #
-
-        return unless defined $value && $value;
-
-        if ( defined $cache->{ $opts->{server} }->{imap_folders}->{fetched_messages}->{$value}->{messages}
-             && ref $cache->{ $opts->{server} }->{imap_folders}->{fetched_messages}->{$value}->{messages} eq 'HASH' ) {
-
-            my $result = scalar( keys %{ $cache->{ $opts->{server} }->{imap_folders}->{fetched_messages}->{$value}->{messages} } );
-
-            return $result;
-
-        }
-
-        # }}}
-
-    }
-
-    return;
-
-} # }}}
-
-# {{{ put_cache
-#
-# Handle inserting the various types of information we want to cache.
-#
-# Sticks in the current time value so for cache aging purposes later.
-#
-sub put_cache {
-
-    my $args = shift;
-
-    my $dbh          = $args->{cache};
-    my $content_type = $args->{content_type};
-    my $values       = $args->{values};
-    my $folder       = $args->{folder};
-
-    return unless $dbh;
-    return unless $content_type;
-
-    if ( $content_type eq 'folder_list' ) {
-
-        # {{{ folder_list cache population
-
-        return unless ref $values eq 'ARRAY';
-
-        $dbh->begin_work;
-
-        my $sql = q[
-
-            INSERT INTO folders (
-                server,
-                folder,
-                last_update
-            ) VALUES (
-                ?,
-                ?,
-                ?
-            )
-
-        ];
-
-        my $cur_time = time;
-
-        for my $cur_folder (@$values) {
-
-            my $sth = $dbh->prepare($sql);
-
-            $sth->execute( $opts->{server}, $cur_folder, $cur_time );
-
-            print "Inserted into DB: " . $opts->{server} . ' ' . $cur_folder . ' ' . $cur_time . "\n";
-
-        }
-
-        $dbh->commit;
-
-        # }}}
-
-    } elsif ( $content_type eq 'validated_folder_list' ) {
-
-        # {{{ validated folder list cache population
-
-        return unless $folder;
-        return if ref $folder;
-
-        $dbh->begin_work;
-
-        my $sql = q[
-            INSERT OR REPLACE INTO folders (
-                server,
-                folder,
-                validated,
-                last_update
-            ) VALUES (
-                ?,
-                ?,
-                ?,
-                ?
-            )
-        ];
-
-        my $sth = $dbh->prepare($sql);
-
-        my $err;
-
-        $sth->execute( $opts->{server}, $folder, 1, time )
-            or $err = 1;
-
-        if ( $err ) {
-            warn "Error caching validated folder: $!\n";
-            $dbh->rollback;
-            return;
-        }
-
-        $dbh->commit;
-
-        # }}}
-
-    } elsif ( $content_type eq 'fetched_messages' ) {
-
-        # {{{ fetched message cash population
-
-        return unless ref $values eq 'HASH';
-        return unless $folder;
-
-        $dbh->begin_work;
-
-        my $sql = q[
-            INSERT OR REPLACE INTO messages (
-                server,
-                msg_id,
-                folder,
-                to_address,
-                from_address,
-                subject,
-                date,
-                size,
-                last_update
-            ) VALUES (
-                ?,
-                ?,
-                ?,
-                ?,
-                ?,
-                ?,
-                ?,
-                ?,
-                ?
-            )
-        ];
-
-        my $mcount = scalar( keys %$values );
-
-        my $cbar = IMAP::Progress->new( max    => $mcount,
-                                        length => 10 );
-
-        $cbar->text('Caching:');
-        $cbar->info('messages');
-
-        my $counter = 0;
-
-        $cbar->update( $counter++ );
-        $cbar->write;
-
-        my $sth = $dbh->prepare($sql);
-
-        my $in_time = time;
-
-        for ( keys %$values ) {
-            my $result = $sth->execute(
-                $opts->{server},
-                $_,
-                $folder,
-                $values->{$_}->{ $header_table{To} },
-                $values->{$_}->{ $header_table{From} },
-                $values->{$_}->{ $header_table{Subject} },
-                $values->{$_}->{ $header_table{Date} },
-                $values->{$_}->{ $header_table{Size} },
-                $in_time
-            );
-
-            if ( $dbh->errstr ) {
-                warn "Message cache insert error: " . $dbh->errstr . "\n";
-                $dbh->rollback;
-                return;
-            }
-
-            #if ( ( ( $counter % 10 ) + 1 ) == 10 ) {
-                $cbar->update( $counter++ );
-                $cbar->write;
-            #}
-
-        }
-
-        $dbh->commit;
-
-        # }}}
-
-    }
-
-    return;
-
-} # }}}
-
-# {{{ cache_prune
-#
-sub cache_prune {
-
-    return if $opts->{cache_only};
-
-    my $args = shift;
-
-    my $content_type = $args->{content_type};
-    my $dbh          = $args->{cache};
-
-    return unless $content_type;
-    return unless $dbh;
-
-    my $cur_time = time;
-    my $max_age  = $cur_time - $opts->{cache_age};
-
-    if ( $content_type eq 'folder_list' ) {
-
-        my $sql = q[
-            DELETE FROM
-                folders
-            WHERE
-                server = ?
-                AND last_update < ?
-        ];
-
-        my $sth = $dbh->prepare( $sql );
-
-        my $result = $sth->execute( $opts->{server}, $max_age );
-
-    }
-
-    return;
-
-}
-
-# }}}
-
-# {{{ cache_report
-#
-# Here's where we're going to start generating our reports.
-#
-# Expects to receive an anon hashref contain the cache (dbh) object, type of
-# report we want to run, the name of the folder, and the header to be used for
-# sorting operations in the reports.
-#
-sub cache_report {
-
-    my $args = shift;
-
-    my $dbh          = $args->{cache};
-    my $folder       = $args->{folder};
-    my $report_type  = $args->{report_type};
-
-    return unless $folder;
-
-    if ( $report_type eq 'report_by_size' ) {
-
-        # {{{ report by size
-
-        my $sql = q[
-            SELECT
-                folder,
-                msg_id,
-                to_address,
-                from_address,
-                date,
-                subject,
-                size
-            FROM
-                messages
-            WHERE
-                server = ?
-                AND folder = ?
-            ORDER BY size DESC
-            LIMIT ?
-        ];
-
-
-
-        my @results = @{
-            $dbh->selectall_arrayref(
-                                      $sql,
-                                      {},
-                                      $opts->{server},
-                                      $folder,
-                                      $opts->{top} )};
-
-
-        ddump( 'selectall_results', @results ) if $opts->{debug};
-
-        my $messages = [];
-
-        push @$messages, [
-                           $_->[0],                     # folder
-                           $_->[1],                     # msg_id
-                           $_->[2],                     # to_address
-                           $_->[3],                     # from_address
-                           scalar localtime $_->[4],    # date
-                           $_->[5],                     # subject
-                           convert_bytes( $_->[6] )     # size
-                         ] for @results;
-
-        ddump( 'header report of collected messages', $messages ) if $opts->{debug};
-
-        return $messages;
-
-        # }}}
-
-    } elsif ( $report_type eq 'report_by_header' ) {
-
-        # {{{ report by header
-
-        my $header = $args->{header};
-
-        if ( ! $header ) {
-            show_error( "Invalid header: $header" );
-            return;
-        }
-
-        if ( ! $folder ) {
-            show_error( "Invalid folder: $folder" );
-            return;
-        }
-
-        # TODO
-        #
-        # Fix this ridiculousness...
-        #
-        my $header_column;
-
-        if ( $header eq 'To' ) {
-            $header_column = 'to_address';
-        } elsif ( $header eq 'From' ) {
-            $header_column = 'from_address';
-        } elsif ( $header eq 'Date' ) {
-            $header_column = 'date';
-        } elsif ( $header eq 'Subject' ) {
-            $header_column = 'subject';
-        } elsif ( $header eq 'Size' ) {
-            $header_column = 'size';
-        } else {
-            $header_column = 'subject';
-        }
-
-        ddump( 'header_column', $header_column ) if $opts->{debug};
-
-
-        my $sql = qq[
-            SELECT
-                count( $header_column ) AS count_column,
-                folder,
-                msg_id,
-                to_address,
-                from_address,
-                date,
-                subject,
-                size
-            FROM
-                messages
-            WHERE
-                server = ?
-                AND folder = ?
-            GROUP BY $header_column
-                HAVING count_column >= 1
-            ORDER BY count_column DESC
-            LIMIT ?
-        ];
-
-        ddump( 'report_by_header_sql',           $sql )            if $opts->{debug};
-        ddump( 'report_by_header_header_column', $header_column )  if $opts->{debug};
-        ddump( 'report_by_header_server',        $opts->{server} ) if $opts->{debug};
-        ddump( 'report_by_header_folder',        $folder )         if $opts->{debug};
-        ddump( 'report_by_header_top',           $opts->{top} )    if $opts->{debug};
-
-        my @results = @{
-            $dbh->selectall_arrayref(
-                                      $sql,
-                                      {},
-                                      $opts->{server},
-                                      $folder,
-                                      $opts->{top}
-                                    )
-            };
-
-        ddump( 'selectall_results', @results ) if $opts->{debug};
-
-        my $messages = [];
-
-        push @$messages, [
-                           $_->[0],                     # count_column
-                           $_->[1],                     # folder
-                           $_->[2],                     # msg_id
-                           $_->[3],                     # to_address
-                           $_->[4],                     # from_address
-                           scalar localtime $_->[5],    # date
-                           $_->[6],                     # subject
-                           convert_bytes( $_->[7] ),    # size
-                         ] for @results;
-
-        ddump( 'header report of collected messages', $messages ) if $opts->{debug};
-
-        return $messages;
-
-        # }}}
-
-    } elsif ( $report_type eq 'total_folder_size' ) {
-
-        # {{{ Total size of messages in folder
-
-        if ( ! $folder ) {
-            show_error( "Invalid folder: $folder" );
-            return;
-        }
-
-        my $sql = qq[
-            SELECT
-                size
-            FROM
-                messages
-            WHERE
-                server = ?
-                AND folder = ?
-        ];
-
-        my @results = @{
-            $dbh->selectall_arrayref(
-                                      $sql,
-                                      {},
-                                      $opts->{server},
-                                      $folder
-                                    )
-            };
-
-        ddump( 'selectall_results', @results ) if $opts->{debug};
-
-        my $messages = [];
-
-        push @$messages, [ $_->[0] ] for @results;
-
-        ddump( 'size report of collected messages', $messages ) if $opts->{debug};
-
-        return $messages;
-
-        # }}}
-
-    } elsif ( $report_type eq 'folder_list' ) {
-
-        # {{{ folder_list cache check
-
-        # Checks the cached list of folders and returns an arrayref list of
-        # them.
-
-
-        my $sql = q[
-
-            SELECT
-                folder
-            FROM
-                folders
-            WHERE
-                server = ?
-
-        ];
-
-        my $folderlist = [];
-
-        push @$folderlist, $_->{folder}
-            for @{ $dbh->selectall_arrayref( $sql, { Slice => {} },
-                                             $opts->{server} ) };
-
-        if ( scalar(@$folderlist) ) {
-            return $folderlist;
-        } else {
-            return;
-        }
-
-        # }}}
-
-    } elsif ( $report_type eq 'validated_folder_list' ) {
-
-        # {{{ validated folder cache check
-
-        # The list of VALIDATED folders is cached separately.  This just returns
-        # a true/false if a folder appears in the list of validated folders.
-        # (Validated folders have passed a test using the 'exists' method.)
-        #
-
-        my $sql = q[
-            SELECT
-                folder
-            FROM
-                FOLDERS
-            WHERE
-                server = ?
-                AND validated = 1
-
-        ];
-
-        my $results = [];
-
-        push @$results, $_->{folder}
-            for @{ $dbh->selectall_arrayref( $sql, { Slice => {} },
-                                             $opts->{server} ) };
-
-        return $results->[0];
-
-        # }}}
-
-    } elsif ( $report_type eq 'fetched_messages' ) {
-
-        # {{{ fetched messages cache check
-
-        my $sql = q[
-            SELECT
-                msg_id,
-                to_address,
-                from_address,
-                subject,
-                date,
-                size
-            FROM
-                messages
-            WHERE
-                folder = ?
-        ];
-
-        my $msgs = {};
-
-       #for ( @{ $dbh->selectall_arrayref( $sql, { Slice => {} }, $value ) } ) {
-
-       #    $msgs->{$_->{msg_id}}->{$header_table{'From'}}    = $_->{from_address};
-       #    $msgs->{$_->{msg_id}}->{$header_table{'Date'}}    = $_->{date};
-       #    $msgs->{$_->{msg_id}}->{$header_table{'Subject'}} = $_->{subject};
-       #    $msgs->{$_->{msg_id}}->{$header_table{'To'}}      = $_->{to_address};
-       #    $msgs->{$_->{msg_id}}->{$header_table{'Size'}}    = $_->{size};
-
-       #}
-
-        return $msgs;
-
-        # }}}
-
-    } elsif ( $report_type eq 'message_count' ) {
-
-        # {{{ cached message count check
-
-        # This looks into the cache of messages and if messages have been
-        # cached, returns the count of the number of messages stored there.
-        # Folder message counts themselves are not actually cached.
-        #
-
-
-        # }}}
-
-    }
-
-    return;
 
 } # }}}
 
@@ -3718,6 +3825,8 @@ sub enter {
     return $input;
 
 }
+
+# }}}
 
 # }}}
 
