@@ -547,15 +547,15 @@ $opts->{Fast_io}           = 1;
 $opts->{Reconnectretry}    = 3;
 $opts->{Ssl}               = 1;
 $opts->{Uid}               = 0;
-$opts->{force}             = 0;
 $opts->{list}              = 0;
 $opts->{types}             = 0;
 $opts->{threads}           = 0;
 $opts->{use_threaded_mode} = 0;
+$opts->{min_for_threads}   = 200;     # Minimum number of messages before threaded mode allowed
 $opts->{threshold}         = 20;      # Message count threshold before flushing message cache
 $opts->{conf}              = "$ENV{HOME}/.imapreportrc";
 $opts->{cache_file}        = "$ENV{HOME}/.imap-report.cache";
-$opts->{cache_age}         = 24 * 60 * 60;
+$opts->{cache_age}         = 7;
 $opts->{cache_only}        = 0;
 $opts->{cache_prune}       = 1;
 
@@ -585,15 +585,22 @@ GetOptions(
         'cache_age=i',
         'cache_only!',
         'cache_prune!',
+        'threshold=i',
         'threads=i',
         'use_threaded_mode!',
+        'min_for_threads=i',
         'pager=s',
-        'force!',
         'debug!',
         'verbose!',
-        'threshold=i',
 
 );
+
+
+my $cache_age = 
+    $opts->{cache_age}
+    ? $opts->{cache_age} * 24 * 60 * 60
+    : 24 * 60 * 60
+    ;
 
 if ( $opts->{list} ) {
     $opts->{report} = 'list';
@@ -1857,11 +1864,22 @@ sub fetch_folders {
 
     my $imap_count = scalar(@filtered_imap);
 
+    # If the number of folders on the server matches the number of folders in
+    # cache, then don't bother to validate and store the list of folders.
+    #
+    # TODO
+    #
+    # Obviously just comparing the number of folders isn't going to detect an
+    # actual difference between real and cached...
+    #
     if ( $cached_count == $imap_count ) {
         return @filtered_imap;
     }
 
-    print "Processing list of IMAP folders...\n";
+    # Only folders that have been validated will be cached.  A bit of a slow
+    # operation, but important.
+    #
+    print "\n\nValidating list of IMAP folders...\n";
 
     my @valid_list = validate_folders({ folders => \@filtered_imap });
 
@@ -2034,8 +2052,10 @@ sub fetch_messages {
 
     my $num = $f_imap->message_count;
 
+    # Make sure all the threads are going to have something to do...
+    #
     my $skip_threads =
-        $num <= $opts->{threads}
+        $num <= $opts->{threads} && $num < $opts->{min_for_threads}
         ? 1
         : 0
         ;
@@ -2087,6 +2107,8 @@ sub fetch_messages {
 
         } else {
 
+            print "Fetching messages for folder '$folder'.  This may take a while...\n\n";
+
             $fetched = $f_imap->fetch_hash( $msg_ids, @headers );
 
             my $max = ( scalar( keys %$fetched ) );
@@ -2108,9 +2130,7 @@ sub fetch_messages {
 
                     $fetched->{$cur_id}->{$cur_header} =
                         stripper( $header_table{$cur_header},
-                                $fetched->{$cur_id}->{$cur_header} );
-
-                    $fetched->{$cur_id}->{$cur_header} = '[EmptyValue]' unless $fetched->{$cur_id}->{$cur_header};
+                                  $fetched->{$cur_id}->{$cur_header} );
 
                 }
 
@@ -2927,7 +2947,7 @@ sub cache_prune {
     return unless $dbh;
 
     my $cur_time = time;
-    my $max_age  = $cur_time - $opts->{cache_age};
+    my $max_age  = $cur_time - $cache_age;
 
     if ( $content_type eq 'folder_list' ) {
 
@@ -4317,11 +4337,17 @@ Name of the file used to store cached information.
 
 =item B<--cache_age> I<integer>
 
-Maximum age of cached information.
+Maximum age of cached information in days.
 
-(currently non-functional)
+(Pruning of the cache can be suppressed with --no-cache_prune).
 
-(default: 1 day)
+(default: 7)
+
+=item B<--cache_only>
+
+Supresses almost all IMAP operations and works from cache only.
+
+(default: false)
 
 =item B<--threshold>
 
@@ -4331,7 +4357,7 @@ The message count threshold where the number of messages in cache differs from t
 
 =item B<--conf> I<config_filename>
 
-Name of the file in which to read configuration options.
+Name of the file from which to read configuration options.
 
 All of these configuration options can be stored in the specified file using the same names listed here.  Must only be readable by the user.
 
