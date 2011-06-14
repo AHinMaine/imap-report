@@ -1687,8 +1687,8 @@ sub get_list_ids {
                                          cache       => $gli_cache,
                                          report_type => 'all_list_ids' });
 
-    ddump( 'fetched_details', $fetched_details );
-    ddump( 'ref fetched_details', ref $fetched_details );
+    ddump( 'fetched_details', $fetched_details ) if $opts->{debug};
+    ddump( 'ref fetched_details', ref $fetched_details ) if $opts->{debug};
 
     for my $cur_msg ( @$fetched_details ) {
         push @$raw_report, [ $cur_msg->[0], $folder, $cur_msg->[1] ];
@@ -2847,7 +2847,7 @@ sub cache_put {
 
         show_error( "PUTTING CACHE FOR FOLDER: $folder " . Dumper( $values ) );
 
-        ddump( 'values', $values );
+        ddump( 'values', $values ) if $opts->{debug};
 
         $dbh->begin_work;
 
@@ -3228,7 +3228,7 @@ sub cache_report {
                                     )
             };
 
-        ddump( 'all_list_ids_selectall_results', @results ); # if $opts->{debug};
+        ddump( 'all_list_ids_selectall_results', @results ) if $opts->{debug};
 
         my $messages = [];
 
@@ -3424,8 +3424,8 @@ sub stripper {
 
     return unless $name;
 
-    ddump( 'before_stripping_name', $name );
-    ddump( 'before_stripping_field', $field );
+    ddump( 'before_stripping_name', $name ) if $opts->{debug};
+    ddump( 'before_stripping_field', $field ) if $opts->{debug};
 
     $field =~ s/[\r\n\t]+/ /g;      # CRLF and tabs
     $field =~ s/\R+/ /g;            #
@@ -3510,7 +3510,7 @@ sub stripper {
         $field = ']]EMPTY[[';
     }
 
-    ddump( 'after_stripping_field', $field );
+    ddump( 'after_stripping_field', $field ) if $opts->{debug};
 
     return $field;
 
