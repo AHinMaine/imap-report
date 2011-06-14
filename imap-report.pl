@@ -557,6 +557,7 @@ $opts->{conf}              = "$ENV{HOME}/.imapreportrc";
 $opts->{cache_file}        = "$ENV{HOME}/.imap-report.cache";
 $opts->{cache_age}         = 24 * 60 * 60;
 $opts->{cache_only}        = 0;
+$opts->{cache_prune}       = 1;
 
 GetOptions(
 
@@ -583,6 +584,7 @@ GetOptions(
         'cache_file=s',
         'cache_age=i',
         'cache_only!',
+        'cache_prune!',
         'threads=i',
         'use_threaded_mode!',
         'pager=s',
@@ -649,7 +651,7 @@ if ( $opts->{threads} >= 2 && grep $opts->{threads} == $_, @valid_threads ) {
 # Date::Manip is now mandatory...
 #
 unless ( eval 'require Date::Manip; import Date::Manip::Date; 1;' ) {
-    print "Date::Manip module needed...\n";
+    die_clean(  1, "Date::Manip module needed..." );
 }
 
 
@@ -684,7 +686,6 @@ use_threaded_mode: $opts->{use_threaded_mode}
         cache_age: $opts->{cache_age}
 
           verbose: $opts->{verbose}
-
 
 ]);
 
@@ -784,6 +785,9 @@ my %header_table = (
                 'FROM'                          => 'BODY[HEADER.FIELDS (FROM)]',
                 'BODY[HEADER.FIELDS (FROM)]'    => 'FROM',
 
+                'LISTID'                        => 'BODY[HEADER.FIELDS (LIST-ID)]',
+                'BODY[HEADER.FIELDS (LIST-ID)]' => 'LISTID',
+
 );
 
 # Some global queues used in threaded fetching mode...
@@ -796,108 +800,105 @@ my $reports = report_types();
 #
 my $cache = cache_init( $opts->{cache_file} );
 
-#my @imap_folders = fetch_folders({ cache    => $cache,
-#                                   filters  => $opts->{filters},
-#                                   excludes => $opts->{exclude} });
-
-#die_clean( 1, "No folders in fetched lists!" ) unless scalar(@imap_folders);
-
 # {{{ The main loop...
 #
 # Keep going until 'quit'
 #
 while (1) {
 
-    {
+    if ($use_threaded_mode) {
+        $fetched_queue  = Thread::Queue->new();
+        $fetcher_status = Thread::Queue->new();
+        $progress_queue = Thread::Queue->new();
+        $sequence_queue = Thread::Queue->new();
+    }
 
-        if ($use_threaded_mode) {
-            $fetched_queue  = Thread::Queue->new();
-            $fetcher_status = Thread::Queue->new();
-            $progress_queue = Thread::Queue->new();
-            $sequence_queue = Thread::Queue->new();
-        }
-
-        my $banner =
-           #  '(Number of folders in list: '
-           #. scalar(@imap_folders)
-           #. ")\n\n\n"
-           #. 
-            "Choose your report type: \n\n\n";
+    my $banner = "Choose your report type: \n\n\n";
 
 
-        # Choose what type of report we want to run.
-        #
-        my $action = 
-            $opts->{report}
-            ? $reports->{$opts->{report}}
-            : choose_action({ banner  => $banner,
-                              reports => $reports });
+    # Choose what type of report we want to run.
+    #
+    my $action = 
+        $opts->{report} && $reports->{$opts->{report}}
+        ? $reports->{$opts->{report}}
+        : choose_action({ banner  => $banner,
+                          reports => $reports });
 
-        die_clean( 0, 'Quitting...' ) if $action eq ']quit[';
+    die_clean( 0, 'Quitting...' ) if $action eq ']quit[';
 
-        print "\n\n Action selected: $action\n";
+    print "\n\n Report selected: $action\n\n";
 
-        my @report;
+    my @report;
 
-        # Take action based on our chosen report type.  The
-        # reports themselves don't print any output, but just
-        # populate an array for display at the end of the job.
-        #
-        # TODO
-        #
-        # (This could be handled a LOT more elegantly...)
-        #
-        if ( $action eq $reports->{biggest_messages_report} ) {
+    # Take action based on our chosen report type.  The
+    # reports themselves don't print any output, but just
+    # populate an array for display at the end of the job.
+    #
+    # TODO
+    #
+    # (This could be handled a LOT more elegantly...)
+    #
+    if ( $action eq $reports->{biggest_messages_report} ) {
 
-            @report = biggest_messages_report({ cache => $cache });
+        @report = biggest_messages_report({ cache => $cache });
 
-        } elsif ( $action eq $reports->{size_report} ) {
+    } elsif ( $action eq $reports->{size_report} ) {
 
-            @report = size_report({ cache => $cache });
+        @report = size_report({ cache => $cache });
 
-       #} elsif ( $action eq $reports->{folder_message_count_report} ) {
+    } elsif ( $action eq $reports->{all_folders_message_count_report} ) {
 
-       #    @report = folder_message_count_report({ cache => $cache });
+        @report = all_folders_message_count_report({ cache => $cache });
 
-       #} elsif ( $action eq $reports->{folder_message_sizes_report} ) {
+    } elsif ( $action eq $reports->{all_folders_message_sizes_report} ) {
 
-            #@report = folder_message_sizes_report({ cache => $cache });
+        @report = all_folders_message_sizes_report({ cache => $cache });
 
-        } elsif ( $action eq $reports->{messages_by_subject_report} ) {
+    } elsif ( $action eq $reports->{all_folders_list_ids_report} ) {
 
-            #@report = messages_by_subject_report({ cache => $cache });
+        @report = all_folders_list_ids_report({ cache => $cache });
 
-            @report = messages_by_header_report({ cache => $cache, header => 'SUBJECT' });
+    } elsif ( $action eq $reports->{messages_by_subject_report} ) {
 
-        } elsif ( $action eq $reports->{messages_by_from_address_report} ) {
+        #@report = messages_by_subject_report({ cache => $cache });
 
-            #@report = messages_by_from_address_report({ cache => $cache });
+        @report = messages_by_header_report({ cache => $cache, header => 'SUBJECT' });
 
-            @report = messages_by_header_report({ cache => $cache, header => 'FROM' });
+    } elsif ( $action eq $reports->{messages_by_from_address_report} ) {
 
-        } elsif ( $action eq $reports->{messages_by_to_address_report} ) {
+        #@report = messages_by_from_address_report({ cache => $cache });
 
-            #@report = messages_by_to_address_report();
+        @report = messages_by_header_report({ cache => $cache, header => 'FROM' });
 
-            @report = messages_by_header_report({ cache => $cache, header => 'TO' });
+    } elsif ( $action eq $reports->{messages_by_to_address_report} ) {
 
-        } elsif ( $action eq $reports->{list} ) {
+        #@report = messages_by_to_address_report();
 
-            @report = list_folders({ cache => $cache });
+        @report = messages_by_header_report({ cache => $cache, header => 'TO' });
 
-        }
+    } elsif ( $action eq $reports->{messages_by_list_id_report} ) {
 
-        next unless scalar(@report);
+        @report = messages_by_list_id_report({ cache => $cache });
 
-        print_report(\@report);
+    } elsif ( $action eq $reports->{list} ) {
 
+        @report = list_folders({ cache => $cache });
 
-        # If we manually specified the report type, don't bother going back to the
-        # menu.
-        #
-        die_clean( 0, "Quitting..." )  if $opts->{report};
+    } else {
+
+        die_clean( 1, "Invalid report type selected: $action" );
 
     }
+
+    next unless scalar(@report);
+
+    print_report(\@report);
+
+
+    # If we manually specified the report type, don't bother going back to the
+    # menu.
+    #
+    die_clean( 0, "Quitting..." )  if $opts->{report};
 
 } # }}}
 
@@ -913,15 +914,17 @@ sub report_types {
     # These are the types of reports that can be run.
     #
     return {
-#       folder_message_count_report     => 'Total count of messages in ALL folders',
-#       folder_message_sizes_report     => 'Total size of messages in ALL folders',
-        messages_by_subject_report      => 'Folder report: All messages sorted by SUBJECT',
-        messages_by_from_address_report => 'Folder report: All messages sorted by FROM address',
-        messages_by_to_address_report   => 'Folder report: All messages sorted by TO address',
-        biggest_messages_report         => 'Folder report: Largest messages',
-        size_report                     => 'Folder report: Total size of messages',
-        list                            => 'Display the current list of folders',
-    };
+             all_folders_message_count_report => 'Total count of messages in ALL folders',
+             all_folders_message_sizes_report => 'Total size of messages in ALL folders',
+             all_folders_list_ids_report      => 'Total summary of the message List-ID headers in ALL folders',
+             messages_by_subject_report       => 'Folder statistics report for message SUBJECT',
+             messages_by_list_id_report       => 'Folder statistics report for message LISTID',
+             messages_by_from_address_report  => 'Folder statistics report for message FROM addresses',
+             messages_by_to_address_report    => 'Folder statistics report for message TO addresses',
+             biggest_messages_report          => 'Folder statistics report for message SIZE',
+             size_report                      => 'Folder summary report for total size of messages',
+             list                             => 'Display the current list of folders',
+           };
 
 } # }}}
 
@@ -937,7 +940,9 @@ sub list_folders {
 
     my @imap_folders = imap_folders();
 
-    push @r, "$_\n" for @imap_folders;
+    my @filtered = filter_folders({ folders => \@imap_folders });
+
+    push @r, "$_\n" for @filtered;
 
     return @r;
 
@@ -1029,6 +1034,7 @@ sub biggest_messages_report {
         my $DATE         = $_->[4];
         my $SUBJECT      = $_->[5];
         my $SIZE         = $_->[6];
+        my $LISTID       = $_->[7];
 
 
         push @breport, "$DATE\t$SIZE\t\t$SUBJECT\n";
@@ -1169,7 +1175,7 @@ sub messages_by_header_report {
     push @cur_report, $_
         for tabulator({ rows    => $msgs,
                         header  => $header,
-                        columns => [qw/COUNT TO FROM DATE SUBJECT SIZE/] });
+                        columns => [qw/COUNT TO FROM DATE SUBJECT SIZE LISTID/] });
 
     push @cur_report, "\n\n\n";
 
@@ -1177,36 +1183,178 @@ sub messages_by_header_report {
 
 } # }}}
 
-# {{{ folder_message_count_report
+# {{{ messages_by_list_id_report
+#
+sub messages_by_list_id_report {
+
+    my $args = shift;
+
+    my $mblir_cache = $args->{cache};
+
+    return unless $mblir_cache;
+
+    my $report_type = $reports->{messages_by_list_id_report};
+
+    my @imap_folders = fetch_folders({ cache => $mblir_cache });
+
+    my $folder = folder_choice({ folders => \@imap_folders, report_type => $report_type });
+
+    my @listid_report = ();
+
+    push @listid_report, "\n\n$report_type\n\n";
+    push @listid_report, '-' x 60 . "\n\n\n";
+
+    my $raw_report         = [];
+
+    for my $cur_msg ( get_list_ids({ cache => $mblir_cache, folder => $folder }) ) {
+        push @$raw_report, [ $cur_msg->[0], $cur_msg->[1], $cur_msg->[2] ];
+    }
+
+    if ( ! scalar(@$raw_report) ) {
+        show_error( "No message details found..." );
+        return;
+    }
+
+    push @listid_report, $_
+        for tabulator({ rows    => $raw_report,
+                        columns => [qw/COUNT FOLDER LISTID/] });
+
+
+    push @listid_report, "\n\n\n" . '-' x 60 . "\n\n\n\n";
+
+    return @listid_report;
+
+} # }}}
+
+# {{{ all_folders_message_count_report
 #
 # Displays a count of the number of messages in each folder.  While it can use
 # cached values, the message counts themselves are not a cached value.
 #
-sub folder_message_count_report {
+sub all_folders_message_count_report {
 
     my $args = shift;
 
     my $fmcr_cache = $args->{cache};
 
-    my $report_type = $reports->{folder_message_count_report};
+    my $report_type = $reports->{all_folders_message_count_report};
 
     my $total_message_count = 0;
 
     my @fsize_report = ();
 
-    push @fsize_report, "\n\n$report_type\n\n";
-    push @fsize_report, "Count\t\t\tFolder\n";
-    push @fsize_report, '-' x 60 . "\n";
+    push @fsize_report, "\n" x 10 . "$report_type\n\n";
+    push @fsize_report, '-' x 60 . "\n\n\n";
 
-    my $raw_report = {};
     my $total_num_messages = 0;
-    my $folders_counted = 0;
+    my $folders_counted    = 0;
 
     my @imap_folders = fetch_folders({ cache => $fmcr_cache });
 
     my $num_folders = scalar(@imap_folders);
 
-    my $bar = IMAP::Progress->new( max => $num_folders, length => 10 );
+    my $raw_report = {};
+
+    my @uncached_folders;
+
+    for ( @imap_folders ) {
+
+        next if $_ eq '[Gmail]/All Mail';
+
+        my $count = cache_check({ cache => $fmcr_cache, content_type => 'fetched_messages', value => $_ });
+        
+        if ( $count ) {
+
+            # Add a couple of asterisks to easily see which folders are cached.
+            #
+            $raw_report->{ '**' . $_ } = $count;
+
+            # We don't want the 'All Mail' gmail label to skew our total since
+            # it represents ALL messages in a gmailbox.
+            #
+            $total_num_messages += $count;
+
+        } else {
+
+            push @uncached_folders, $_ unless $opts->{cache_only};
+
+        }
+
+    }
+
+    print "\n\nFound $total_num_messages cached messages.\n\n"
+        . "Now asking the imap server directly...\n\n";
+
+    if ( scalar(@uncached_folders) ) {
+
+        my $bar = IMAP::Progress->new( max => $num_folders, length => 10 );
+
+        my $fmcr_socket = create_ssl_socket( 'fmcr_socket' );
+
+        my $fmcr_imap = Mail::IMAPClient->new( %imap_options, Socket => $fmcr_socket )
+            or die "Cannot connect to host : $@";
+
+        for ( @uncached_folders ) {
+
+            next if $_ eq '[Gmail]/All Mail';
+
+            $fmcr_imap->examine($_)
+                or show_error( "Error selecting $_: $@\n" );
+
+            $bar->info( "Sent: " . $fmcr_imap->Transaction . " STATUS \"$_\"" );
+
+            my $count = $fmcr_imap->message_count();
+
+            $raw_report->{$_} = $count if $count;
+
+            $bar->update( ++$folders_counted );
+
+            $bar->write;
+
+            $total_num_messages += $count;
+
+        }
+
+        print "\n" x 5;
+
+        sleep 2;
+
+        $fmcr_imap->disconnect;
+        $fmcr_socket->close( %ssl_socket_options );
+
+    }
+
+ 
+
+
+    my @rows;
+
+    # Iterate the hashref of raw data and populate a list of arrayrefs to feed
+    # to the tabulator
+    #
+    for my $fc ( reverse sort { $raw_report->{$a} <=> $raw_report->{$b} } keys %$raw_report ) {
+        push @rows, [ $raw_report->{$fc}, $fc ];
+    }
+
+    push @fsize_report, $_
+        for tabulator({ rows    => \@rows,
+                        columns => [qw/Folder Messages/] });
+
+
+    push @fsize_report, "\n\n\n\n\n" . '-' x 60 . "\n\n";
+    push @fsize_report, "Total messages found: $total_num_messages\n\n";
+
+#   if ( ! $opts->{cache_only} && ref $fmcr_imap ) {
+#       $fmcr_imap->disconnect;
+#       $fmcr_socket->close( %ssl_socket_options );
+#   }
+
+    return @fsize_report;
+
+
+
+
+=pod
 
     {
 
@@ -1214,8 +1362,6 @@ sub folder_message_count_report {
 
         my $fmcr_imap = Mail::IMAPClient->new( %imap_options, Socket => $fmcr_socket )
             or die "Cannot connect to host : $@";
-
-
 
         for ( @imap_folders ) {
 
@@ -1280,18 +1426,20 @@ sub folder_message_count_report {
 
     return @fsize_report;
 
+=cut
+
 } # }}}
 
-# {{{ folder_message_sizes_report
+# {{{ all_folders_message_sizes_report
 #
-sub folder_message_sizes_report {
+sub all_folders_message_sizes_report {
 
     my $args = shift;
 
     my $folder     = $args->{folder};
     my $fmsr_cache = $args->{cache};
 
-    my $report_type = $reports->{folder_message_sizes_report};
+    my $report_type = $reports->{all_folders_message_sizes_report};
 
     my @imap_folders = fetch_folders({ cache => $fmsr_cache });
 
@@ -1368,6 +1516,69 @@ sub folder_message_sizes_report {
 
 } # }}}
 
+# {{{ all_folders_list_ids_report
+#
+sub all_folders_list_ids_report {
+
+    my $args = shift;
+
+    my $alir_cache = $args->{cache};
+
+    my $report_type = $reports->{all_folders_list_ids_report};
+
+    my @imap_folders = fetch_folders({ cache => $alir_cache });
+
+    # Extra press-enter-to-continue prompts to make damn sure that we understand
+    # that this is long, heavy operation on a mailbox with a ton of messages.
+    #
+    show_error(
+          "Caution: This operation will iterate EVERY SINGLE message\n"
+        . "in your IMAP mailbox.  While only the message size\n"
+        . "attribute is collected (full email messages are not\n"
+        . "downloaded), this will still take a VERY long time!\n"
+        . "Cancel out of this script if you do not wish to procede.\n"
+        . "Hint, try using the --filter option to pare down the list\n"
+        . "of folders before running this report.\n"
+    );
+
+    show_error(
+        "\n\n"
+        . join( "\n", @imap_folders )
+        . "\n\nAbove is the list of folders that will be iterated for the report.\n\n"
+        . "Last chance to cancel!\n\n"
+    );
+
+    my $total_message_count = 0;
+
+    my @listid_report = ();
+
+    push @listid_report, "\n\n$report_type\n\n";
+    push @listid_report, '-' x 60 . "\n\n\n";
+
+    my $raw_report         = [];
+
+    for ( @imap_folders ) {
+        for my $cur_msg ( get_list_ids({ cache => $alir_cache, folder => $_ }) ) {
+            push @$raw_report, [ $cur_msg->[0], $cur_msg->[1], $cur_msg->[2] ];
+        }
+    }
+
+    if ( ! scalar(@$raw_report) ) {
+        show_error( "No message details found..." );
+        return;
+    }
+
+    push @listid_report, $_
+        for tabulator({ rows    => $raw_report,
+                        columns => [qw/COUNT FOLDER LISTID/] });
+
+
+    push @listid_report, "\n\n\n" . '-' x 60 . "\n\n\n\n";
+
+    return @listid_report;
+
+} # }}}
+
 # {{{ show_report_types
 #
 sub show_report_types {
@@ -1383,7 +1594,7 @@ for ( sort { $types->{$a} cmp $types->{$b} } keys %$types ) {
 my @cur_report;
 
 for ( tabulator({ rows    => $rpts, columns => [qw/Type Description/] }) ) {
-    push @cur_report, $_ . "\n";
+    push @cur_report, $_;
 }
 
 print for @cur_report;
@@ -1414,14 +1625,15 @@ sub get_folder_size {
                                           report_type => 'total_folder_size' });
 
 
-    return ( 0, 0 ) unless scalar( keys %$fetched_messages );
+    return ( 0, 0 ) unless scalar(@$fetched_messages);
 
     my $totalsize;
 
     my $counter = 0;
 
-    for ( keys %$fetched_messages ) {
-        $totalsize += $fetched_messages->{$_}->{$header_table{'Size'}};
+    for ( @$fetched_messages ) {
+       #$totalsize += $fetched_messages->{$_}->{$header_table{'Size'}};
+        $totalsize += $_->[0];
         $counter++;
     }
 
@@ -1433,6 +1645,51 @@ sub get_folder_size {
     }
 
     return ( $totalsize, $counter );
+
+} # }}}
+
+# {{{ get_list_ids
+#
+# TODO
+#
+# Simplify this mess.
+#
+sub get_list_ids {
+
+    my $args = shift;
+
+    my $folder    = $args->{folder};
+    my $gli_cache = $args->{cache};
+
+    return unless $folder;
+    return unless $gli_cache;
+
+    my $raw_report         = [];
+    my $total_num_messages = 0;
+
+
+    # Always skip the 'All Mail' gmail label.  This represents every message, so
+    # it will just skew the results.
+    #
+    if ( $_ eq '[Gmail]/All Mail' ) {
+        print "...Skipping the $_ Folder...\n";
+        next;
+    }
+
+    my $update_count = fetch_messages({ folder => $_, cache => $gli_cache });
+
+    my $fetched_details = cache_report({ folder      => $_,
+                                         cache       => $gli_cache,
+                                         report_type => 'all_list_ids' });
+
+    ddump( 'fetched_details', $fetched_details );
+    ddump( 'ref fetched_details', ref $fetched_details );
+
+    for my $cur_msg ( @$fetched_details ) {
+        push @$raw_report, [ $cur_msg->[0], $folder, $cur_msg->[1] ];
+    }
+
+    return @$raw_report;
 
 } # }}}
 
@@ -1753,7 +2010,7 @@ sub fetch_messages {
     #
     # Fix this header handling...
     #
-    push @headers, $header_table{$_} for qw/DATE SUBJECT SIZE TO FROM/;
+    push @headers, $header_table{$_} for qw/DATE SUBJECT SIZE TO FROM LISTID/;
 
     my $cached_count = cache_check({ cache => $f_cache, content_type => 'fetched_messages', value => $folder });
 
@@ -1793,8 +2050,11 @@ sub fetch_messages {
     #
     if ( $cached_count && abs( $cached_count - $num ) <= $opts->{threshold} ) {
 
-        print "Found $cached_count cached messages\n";
+        print "Found $cached_count cached messages.\n"
+            . "Using cached messages only for this folder.\n";
+
         return $cached_count;
+
 
     } else {
         print "Found $cached_count messages in cache, but server shows $num messages.\n";
@@ -1873,7 +2133,7 @@ sub fetch_messages {
 
     # Store our results in the cache then return the results.
     #
-    print "Storing messages in cache...\n";
+    print "\n\n\n\n\nStoring messages in cache...\n";
 
     cache_put({ cache => $f_cache, content_type => 'fetched_messages', folder => $folder, values => $fetched });
 
@@ -2076,7 +2336,7 @@ sub imap_thread {
     #
     # Fix this header handling...
     #
-    push @headers, $header_table{$_} for qw/DATE SUBJECT SIZE TO FROM/;
+    push @headers, $header_table{$_} for qw/DATE SUBJECT SIZE TO FROM LISTID/;
 
     my %imap_options = %global_imap_options;
 
@@ -2277,6 +2537,7 @@ sub cache_init {
                 "TO"            TEXT,
                 "FROM"          TEXT,
                 SUBJECT         TEXT,
+                LISTID          TEXT,
                 DATE            INTEGER NOT NULL,
                 SIZE            INTEGER NOT NULL,
                 last_update     INTEGER
@@ -2562,8 +2823,13 @@ sub cache_put {
 
         # {{{ fetched message cash population
 
-        return unless ref $values eq 'HASH';
+        return unless defined $values && ref $values eq 'HASH';
         return unless $folder;
+
+
+        show_error( "PUTTING CACHE FOR FOLDER: $folder " . Dumper( $values ) );
+
+        ddump( 'values', $values );
 
         $dbh->begin_work;
 
@@ -2577,8 +2843,10 @@ sub cache_put {
                 SUBJECT,
                 DATE,
                 SIZE,
+                LISTID,
                 last_update
             ) VALUES (
+                ?,
                 ?,
                 ?,
                 ?,
@@ -2618,11 +2886,12 @@ sub cache_put {
                 $values->{$_}->{ $header_table{SUBJECT} },
                 $values->{$_}->{ $header_table{DATE} },
                 $values->{$_}->{ $header_table{SIZE} },
+                $values->{$_}->{ $header_table{LISTID} },
                 $in_time
             );
 
             if ( $dbh->errstr ) {
-                warn "Message cache insert error: " . $dbh->errstr . "\n";
+                show_error( "Message cache insert error: " . $dbh->errstr );
                 $dbh->rollback;
                 return;
             }
@@ -2649,6 +2918,7 @@ sub cache_put {
 sub cache_prune {
 
     return if $opts->{cache_only};
+    return unless $opts->{cache_prune};
 
     my $args = shift;
 
@@ -2691,6 +2961,8 @@ sub cache_prune {
 
     }
 
+    $opts->{cache_prune} = 0;
+
     return;
 
 }
@@ -2713,11 +2985,11 @@ sub cache_report {
     my $folder       = $args->{folder};
     my $report_type  = $args->{report_type};
 
-    return unless $folder;
-
     if ( $report_type eq 'report_by_size' ) {
 
         # {{{ report by size
+
+        return unless $folder;
 
         my $sql = q[
             SELECT
@@ -2727,7 +2999,8 @@ sub cache_report {
                 "FROM",
                 DATE,
                 SUBJECT,
-                SIZE
+                SIZE,
+                LISTID
             FROM
                 messages
             WHERE
@@ -2772,6 +3045,8 @@ sub cache_report {
 
         # {{{ report by header
 
+        return unless $folder;
+
         my $header = $args->{header};
 
         if ( ! $header ) {
@@ -2814,7 +3089,8 @@ sub cache_report {
                 "FROM",
                 DATE,
                 SUBJECT,
-                SIZE
+                SIZE,
+                LISTID
             FROM
                 messages
             WHERE
@@ -2901,6 +3177,51 @@ sub cache_report {
 
         # }}}
 
+    } elsif ( $report_type eq 'all_list_ids' ) {
+
+        # {{{ Total summary of list IDs of all messages in a folder
+
+        if ( ! $folder ) {
+            show_error( "Invalid folder: $folder" );
+            return;
+        }
+
+        my $sql = qq[
+            SELECT
+                count( LISTID ) AS count_column,
+                LISTID
+            FROM
+                messages
+            WHERE
+                server = ?
+                AND folder = ?
+            GROUP BY LISTID
+                HAVING count_column >= 1
+            ORDER BY count_column DESC
+
+        ];
+
+        my @results = @{
+            $dbh->selectall_arrayref(
+                                      $sql,
+                                      {},
+                                      $opts->{server},
+                                      $folder
+                                    )
+            };
+
+        ddump( 'all_list_ids_selectall_results', @results ); # if $opts->{debug};
+
+        my $messages = [];
+
+        push @$messages, [ $_->[0], $_->[1] ] for @results;
+
+        ddump( 'listid report of collected messages', $messages ) if $opts->{debug};
+
+        return $messages;
+
+        # }}}
+
     } elsif ( $report_type eq 'folder_list' ) {
 
         # {{{ folder_list cache check
@@ -2968,6 +3289,8 @@ sub cache_report {
 
         # {{{ fetched messages cache check
 
+        return unless $folder;
+
         my $sql = q[
             SELECT
                 msg_id,
@@ -2975,7 +3298,8 @@ sub cache_report {
                 "FROM",
                 SUBJECT,
                 DATE,
-                SIZE
+                SIZE,
+                LISTID
             FROM
                 messages
             WHERE
@@ -3006,6 +3330,8 @@ sub cache_report {
         # cached, returns the count of the number of messages stored there.
         # Folder message counts themselves are not actually cached.
         #
+
+        return unless $folder;
 
 
         # }}}
@@ -3080,6 +3406,9 @@ sub stripper {
 
     return unless $name;
 
+    ddump( 'before_stripping_name', $name );
+    ddump( 'before_stripping_field', $field );
+
     $field =~ s/[\r\n\t]+/ /g;      # CRLF and tabs
     $field =~ s/\R+/ /g;            #
 
@@ -3094,29 +3423,54 @@ sub stripper {
     $field =~ s/[[:^print:]]//g;    # Non-printables
 
     if ( ! $field ) {
-        $field = ']]EmptyField[[';
+        if ( $name eq 'LISTID' ) {
+            $field = '(no list)';
+        } else {
+            $field = ']]EmptyField[[';
+        }
     }
 
     # Strip off the name of the envelope attribute
     #
-    if ( $field =~ m/^$name:\s+(.*)$/ ) {
+    if ( $field =~ m/^$name:\s+(.*)$/i ) {
         $field = $1;
     }
 
     # For from addresses, just grab the address.
     #
     if ( $name eq 'FROM' or $name eq 'TO' ) {
+
         $field = lc($field);
-        my @addrs = Mail::Address->parse($field);
-        my $addr_obj = $addrs[0];
+
+        my @addrs       = Mail::Address->parse($field);
+        my $addr_obj    = $addrs[0];
         my $parsed_addr = $addr_obj->address;
+
+        # Just wanted a little visual distinction for which test the field was
+        # failing...
+        #
+        if ( ! $parsed_addr ) {
+            $parsed_addr = ']]Empty-Address-Field[[';
+        }
+
+        if ( length $parsed_addr <= 3 ) {
+            $parsed_addr = ']]Empty_Address_Field[[';
+        }
+
         $field = $parsed_addr;
+
     }
 
     # For Dates, convert to epoch
     #
     if ( $name eq 'DATE' ) {
+
         my $epoch = convert_date_to_epoch($field);
+
+        if ( ! $epoch ) {
+            $epoch = 1;
+        }
+
         $field = $epoch;
     }
 
@@ -3133,6 +3487,8 @@ sub stripper {
     if ( ! $field ) {
         $field = ']]EMPTY[[';
     }
+
+    ddump( 'after_stripping_field', $field );
 
     return $field;
 
