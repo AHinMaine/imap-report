@@ -1446,34 +1446,39 @@ sub all_folders_message_sizes_report {
     # Extra press-enter-to-continue prompts to make damn sure that we understand
     # that this is long, heavy operation on a mailbox with a ton of messages.
     #
-    show_error(
-          "Caution: This operation will iterate EVERY SINGLE message\n"
-        . "in your IMAP mailbox.  While only the message size\n"
-        . "attribute is collected (full email messages are not\n"
-        . "downloaded), this will still take a VERY long time!\n"
-        . "Cancel out of this script if you do not wish to procede.\n"
-        . "Hint, try using the --filter option to pare down the list\n"
-        . "of folders before running this report.\n"
-    );
+    if ( ! $opts->{cache_only} ) {
 
-    show_error(
-        "\n\n"
-        . join( "\n", @imap_folders )
-        . "\n\nAbove is the list of folders that will be iterated for the report.\n\n"
-        . "Last chance to cancel!\n\n"
-    );
+        show_error(
+            "Caution: This operation will iterate EVERY SINGLE message\n"
+            . "in your IMAP mailbox.  While only the message size\n"
+            . "attribute is collected (full email messages are not\n"
+            . "downloaded), this will still take a VERY long time!\n"
+            . "Cancel out of this script if you do not wish to procede.\n"
+            . "Hint, try using the --filter option to pare down the list\n"
+            . "of folders before running this report.\n"
+        );
 
-    my $total_message_count = 0;
+        show_error(
+            "\n\n"
+            . '-' x 60 . "\n"
+            . join( "\n", @imap_folders )
+            . '-' x 60 . "\n"
+            . "\n\nAbove is the list of folders that will be iterated for the report.\n\n"
+            . "Last chance to cancel!\n\n"
+        );
+
+    }
 
     my @msize_report = ();
+    my $raw_report   = {};
+
 
     push @msize_report, "\n\n$report_type\n\n";
     push @msize_report, "SIZE\t\t\tCount\t\t\tFolder\n";
     push @msize_report, '-' x 60 . "\n";
 
-    my $raw_report         = {};
-    my $total_num_messages = 0;
-    my $current_iter       = 0;
+    my $total_num_messages  = 0;
+    my $total_message_bytes = 0;
 
     for ( @imap_folders ) {
 
@@ -1493,6 +1498,7 @@ sub all_folders_message_sizes_report {
             $raw_report->{$_}->{SIZE}  = $cur_size;
             $raw_report->{$_}->{count} = $message_count;
             $total_num_messages += $message_count;
+            $total_message_bytes += $cur_size;
         }
 
     }
@@ -1511,6 +1517,7 @@ sub all_folders_message_sizes_report {
 
     push @msize_report, '-' x 60 . "\n\n";
     push @msize_report, "Total messages found: $total_num_messages\n\n";
+    push @msize_report, 'Total size of all messages: ' . convert_bytes( $total_message_bytes ) . "\n\n";
 
     return @msize_report;
 
@@ -1667,18 +1674,9 @@ sub get_list_ids {
     my $raw_report         = [];
     my $total_num_messages = 0;
 
+    my $update_count = fetch_messages({ folder => $folder, cache => $gli_cache });
 
-    # Always skip the 'All Mail' gmail label.  This represents every message, so
-    # it will just skew the results.
-    #
-    if ( $_ eq '[Gmail]/All Mail' ) {
-        print "...Skipping the $_ Folder...\n";
-        next;
-    }
-
-    my $update_count = fetch_messages({ folder => $_, cache => $gli_cache });
-
-    my $fetched_details = cache_report({ folder      => $_,
+    my $fetched_details = cache_report({ folder      => $folder,
                                          cache       => $gli_cache,
                                          report_type => 'all_list_ids' });
 
@@ -3433,6 +3431,10 @@ sub stripper {
     # Strip off the name of the envelope attribute
     #
     if ( $field =~ m/^$name:\s+(.*)$/i ) {
+        $field = $1;
+    }
+
+    if ( $name eq 'LISTID' && $field =~ m/^List-Id:\s+(.*)$/i ) {
         $field = $1;
     }
 
