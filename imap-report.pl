@@ -520,15 +520,7 @@ our $VERSION = sprintf "%d.%d", q$Revision: 1.1 $ =~ /(\d+)/g;
 
 $|=1;
 
-# Handle signals gracefully
-#
-$SIG{'INT'}  = 'die_signal';
-$SIG{'QUIT'} = 'die_signal';
-$SIG{'USR1'} = 'die_signal';
-#$SIG{'CHLD'} = 'IGNORE';
-$SIG{'ABRT'} = 'die_signal';
-#$SIG{'SEGV'} = 'die_signal';
-#$SIG{'CHLD'} = sub { print "\n\n!!CHLD SIG!!\n\n"; };
+
 
 my $break = 0;
 
@@ -601,7 +593,7 @@ GetOptions(
 );
 
 
-my $cache_age = 
+my $cache_age =
     $opts->{cache_age}
     ? $opts->{cache_age} * 24 * 60 * 60
     : 24 * 60 * 60
@@ -774,6 +766,7 @@ if ( ! $opts->{cache_only} ) {
 
 } # }}}
 
+
 # }}}
 
 # Lazy imap to english translation table
@@ -802,9 +795,38 @@ my %header_table = (
 
 # Some global queues used in threaded fetching mode...
 #
-our ( $progress_queue, $fetched_queue, $sequence_queue, $thread_pumpkins,
+our ( $progress_queue, $fetched_queue, $sequence_queue, # $thread_pumpkins,
       $sequences_finished_queue, $thread_errors_queue,
-      $cache_put_status_queue, $cached_msg_count_queue );
+      $cache_put_status_queue, $cached_msg_count_queue, $idle_thread_queue );
+
+my %thread_pumpkins;
+my %work_queues;
+
+# Handle signals gracefully
+#
+#$SIG{'INT'}  = 'die_signal';
+$SIG{'QUIT'} = 'die_signal';
+$SIG{'USR1'} = 'die_signal';
+#$SIG{'CHLD'} = 'IGNORE';
+$SIG{'ABRT'} = 'die_signal';
+#$SIG{'SEGV'} = 'die_signal';
+#$SIG{'CHLD'} = sub { print "\n\n!!CHLD SIG!!\n\n"; };
+
+
+# Gracefully terminate application on ^C or command line 'kill'
+$SIG{'INT'} = $SIG{'TERM'} =
+    sub {
+        print(">>> Terminating <<<\n");
+       #$TERM = 1;
+        # Add -1 to head of idle queue to signal termination
+       #$IDLE_QUEUE->insert(0, -1);
+
+       for ( keys %thread_pumpkins ) {
+            $thread_pumpkins{$_}->enqueue(-1);
+       }
+    };
+
+
 
 my $reports = report_types();
 
@@ -823,7 +845,7 @@ while (1) {
         $progress_queue           = Thread::Queue->new();
         $sequence_queue           = Thread::Queue->new();
         $sequences_finished_queue = Thread::Queue->new();
-        $thread_pumpkins          = Thread::Queue->new();
+       #$thread_pumpkins          = Thread::Queue->new();
         $thread_errors_queue      = Thread::Queue->new();
         $cache_put_status_queue   = Thread::Queue->new();
         $cached_msg_count_queue   = Thread::Queue->new();
@@ -834,7 +856,7 @@ while (1) {
 
     # Choose what type of report we want to run.
     #
-    my $action = 
+    my $action =
         $opts->{report} && $reports->{$opts->{report}}
         ? $reports->{$opts->{report}}
         : choose_action({ banner  => $banner,
@@ -907,6 +929,24 @@ while (1) {
     }
 
     next unless scalar(@report);
+
+    my $ts = scalar localtime time;
+
+    unshift @report, 
+                "\n\n\n\n\n" 
+                . '-' x 60 . "\n"
+                . "Report type: $action\n"
+                . '-' x 60 . "\n"
+                . "Report timestamp: $ts\n"
+                . '-' x 60 
+                . "\n\n\n\n\n";
+
+
+    push @report, 
+        "\n\n\n\n\n" 
+        . '-' x 60 . "\n"
+        . "\n\n\n\n\n";
+
 
     print_report(\@report);
 
@@ -1006,7 +1046,7 @@ sub biggest_messages_report {
 
     push @breport, "\n\nReporting on $fetch_count messages from folder: $folder\n\n";
 
-    my $fetched_messages = cache_report({ folder      => $folder, 
+    my $fetched_messages = cache_report({ folder      => $folder,
                                           cache       => $bmr_cache,
                                           report_type => 'report_by_size' });
 
@@ -1057,6 +1097,7 @@ sub biggest_messages_report {
 
     }
 
+
     return @breport;
 
 } # }}}
@@ -1093,7 +1134,7 @@ sub size_report {
 
     push @sreport, "\n\nReporting on $msg_count messages from folder: $folder\n\n";
 
-    my $fetched_messages = cache_report({ folder      => $folder, 
+    my $fetched_messages = cache_report({ folder      => $folder,
                                           cache       => $sr_cache,
                                           report_type => 'total_folder_size' });
 
@@ -1217,9 +1258,6 @@ sub messages_by_list_id_report {
 
     my @listid_report = ();
 
-    push @listid_report, "\n\n$report_type\n\n";
-    push @listid_report, '-' x 60 . "\n\n\n";
-
     my $raw_report         = [];
 
     for my $cur_msg ( get_list_ids({ cache => $mblir_cache, folder => $folder }) ) {
@@ -1234,9 +1272,6 @@ sub messages_by_list_id_report {
     push @listid_report, $_
         for tabulator({ rows    => $raw_report,
                         columns => [qw/COUNT FOLDER LISTID/] });
-
-
-    push @listid_report, "\n\n\n" . '-' x 60 . "\n\n\n\n";
 
     return @listid_report;
 
@@ -1259,9 +1294,6 @@ sub all_folders_message_count_report {
 
     my @fsize_report = ();
 
-    push @fsize_report, "\n" x 10 . "$report_type\n\n";
-    push @fsize_report, '-' x 60 . "\n\n\n";
-
     my $total_num_messages = 0;
     my $folders_counted    = 0;
 
@@ -1278,7 +1310,7 @@ sub all_folders_message_count_report {
         next if $_ eq '[Gmail]/All Mail';
 
         my $count = cache_check({ cache => $fmcr_cache, content_type => 'fetched_messages', value => $_ });
-        
+
         if ( $count ) {
 
             # Add a couple of asterisks to easily see which folders are cached.
@@ -1338,7 +1370,7 @@ sub all_folders_message_count_report {
 
     }
 
- 
+
 
 
     my @rows;
@@ -1411,7 +1443,6 @@ sub all_folders_message_sizes_report {
     my $raw_report   = {};
 
 
-    push @msize_report, "\n\n$report_type\n\n";
     push @msize_report, "SIZE\t\t\tCount\t\t\tFolder\n";
     push @msize_report, '-' x 60 . "\n";
 
@@ -1497,9 +1528,6 @@ sub all_folders_list_ids_report {
 
     my @listid_report = ();
 
-    push @listid_report, "\n\n$report_type\n\n";
-    push @listid_report, '-' x 60 . "\n\n\n";
-
     my $raw_report         = [];
 
     for ( @imap_folders ) {
@@ -1565,7 +1593,7 @@ sub get_folder_size {
 
     my $msg_count = fetch_messages({ cache => $gfs_cache, folder => $folder });
 
-    my $fetched_messages = cache_report({ folder      => $folder, 
+    my $fetched_messages = cache_report({ folder      => $folder,
                                           cache       => $gfs_cache,
                                           report_type => 'total_folder_size' });
 
@@ -1645,7 +1673,7 @@ sub tabulator {
     my $rows    = $args->{rows};
     my $columns = $args->{columns};
 
-    my $header  = 
+    my $header  =
         defined $args->{header} && $args->{header}
         ? $args->{header}
         : ''
@@ -1719,14 +1747,23 @@ sub print_report {
 
     my $report = shift;
 
-    my $file = "$ENV{HOME}/imap-report.txt";
+    my $file           = "$ENV{HOME}/imap-report.txt";
+    my $running_report = "$ENV{HOME}/imap-running-report.txt";
+
     open ( RPT, ">" . $file )
         or die_clean( 1, "Unable to write report.\n" );
 
-    print RPT $_ for @$report;
+    open ( RRPT, ">>" . $running_report )
+        or die_clean( 1, "Unable to write running report.\n" );
+
+    print RPT  $_ for @$report;
+    print RRPT $_ for @$report;
+
     close RPT;
+    close RRPT;
 
     system( "less -niSRX $file" );
+
     #system( "cat $file" );
 
     die_clean( 0, "Quitting" )
@@ -1827,7 +1864,7 @@ sub fetch_folders {
 sub validate_folders {
 
     my $args = shift;
-    
+
     my $folders  = $args->{folders};
 
     return unless $folders;
@@ -1870,7 +1907,7 @@ sub validate_folders {
 # {{{ imap_folders
 #
 sub imap_folders {
-    
+
     my $if_socket = create_ssl_socket( 'if_socket' );
 
     my $if_imap = Mail::IMAPClient->new( %imap_options, Socket => $if_socket )
@@ -2028,7 +2065,7 @@ sub fetch_messages {
             $msg_ids = $msgset->unfold;
         }
 
-        my $msg_count = 
+        my $msg_count =
             defined $msg_ids && $msg_ids && scalar(@$msg_ids) > 0
             ? scalar(@$msg_ids)
             : 0
@@ -2045,7 +2082,7 @@ sub fetch_messages {
 
         if ( $previously_fetched && scalar(@$previously_fetched) > 0 ) {
             for my $cur_id ( @$msg_ids ) {
-                push @$ids_to_fetch, $cur_id 
+                push @$ids_to_fetch, $cur_id
                     unless grep $cur_id eq $_, @$previously_fetched;
             }
         } else {
@@ -2065,6 +2102,15 @@ sub fetch_messages {
 
             $fetched = threaded_fetch_msgs({ cache => $f_cache, folder => $folder, msgs_in_imap_folder => $num, msg_ids => $msg_ids });
 
+            my $fetched_ids = [];
+
+            for ( sort keys %$fetched ) {
+                push @$fetched_ids, $_;
+            }
+
+            cache_put({ cache => $f_cache, content_type => 'fetched_messages', folder => $folder, values => $fetched });
+            cache_put({ cache => $f_cache, content_type => 'update_message_fetch_status', folder => $folder, values => $fetched_ids });
+
         } else {
 
             print "Fetching messages for folder: '$folder'\n\n\n";
@@ -2082,7 +2128,6 @@ sub fetch_messages {
 
             my $done = 0;
 
-           #while ( my @cur_block = splice @$msg_ids, 0, 500 ) {
             # Keep looping while we get message id's from the cache.
             #
             while ( 1 ) {
@@ -2207,6 +2252,18 @@ sub threaded_fetch_msgs {
 
     my $fetcher = {};
 
+    my $total_sequences     = 0;
+    my $sequences_completed = 0;
+
+    # Establish how many message sequence objects our threads need to
+    # process....
+    #
+    {
+        lock($sequence_queue);
+        $total_sequences = $sequence_queue->pending();
+    }
+
+
     # Take the list of message id's and break them up into smaller chunks in the
     # form of an array of MessageSet objects.
     #
@@ -2215,7 +2272,157 @@ sub threaded_fetch_msgs {
     # Call the function that takes our message id list and loads up our
     # sequences queue with M::I::MessageSet objects.
     #
-    threaded_sequence_chunker( $imap_msg_ids );
+   #threaded_sequence_chunker( $imap_msg_ids );
+
+    # Start the caching thread.
+    #
+    {
+
+        my $cache_put_thread =
+            threads->create({ 'context' => 'void',
+                              'exit'    => 'thread_only' }, \&cache_put_thread, $folder, $total_sequences, $imap_msg_count );
+
+        print "Spawned caching thread.\n\n\n";
+
+        $cache_put_thread->detach();
+
+    }
+
+    my $threads_available = 0;
+
+    # Start our worker threads up first.
+    #
+    for ( 1 .. $opts->{threads} ) {
+        my $work_q = Thread::Queue->new();
+        my $thr = threads->create( \&imap_thread, $folder, $work_q );
+        $thread_pumpkins{ $thr->tid() } = $work_q;
+
+    }
+
+    while ( $sequences_completed < $total_sequences ) {
+
+        # Give our threads a chance to start up and log in...
+        #
+        sleep 6;
+
+        my $available_tid;
+        my $cur_seq;
+
+        {
+
+            # Check and see if there's any idle threads...
+            #
+            lock($idle_thread_queue);
+            lock($sequence_queue);
+            lock($thread_pumpkins{$available_tid});
+
+            $available_tid = $idle_thread_queue->dequeue();
+
+            # If no threads are available, go back and wait.
+            #
+            next unless $available_tid;
+
+            # Otherwise, there's a thread available. Look for a sequence of
+            # message id's to give to our worker..
+            #
+            $cur_seq = $sequence_queue->extract();
+
+            # Loop if we didn't get a M::I::MS object.
+            #
+            next unless $cur_seq && ref $cur_seq;
+
+            # We have messages to fetch, pass that sequence to the available
+            # worker thread.
+            #
+            $thread_pumpkins{$available_tid}->enqueue($cur_seq);
+
+        }
+
+    }
+
+    # Here, we've completed fetching all of our message sequences.
+    #
+    for ( keys %thread_pumpkins ) {
+        # Tell all the threads they can go away...
+        #
+        $thread_pumpkins{$_}->enqueue(-1);
+    }
+
+    my $caching_done = 0;
+
+    while ( ! $caching_done ) {
+
+        sleep 4;
+
+        # Wait for our caching thread to finish up.
+        #
+        {
+            lock($cache_put_status_queue);
+            $caching_done = $cache_put_status_queue->extract();
+        }
+
+    }
+
+    print "\n\nThreads complete...\n\n";
+
+
+} # }}}
+
+=pod
+# {{{ old_threaded_fetch_msgs
+#
+# Expects to receive a list of items representing the message attributes we want
+# to fetch.
+#
+# Returns a hashref of message id's as the keys, and the values for each key are
+# hashrefs of the message attributes on which we want to report.
+#
+sub old_threaded_fetch_msgs {
+
+    my $args = shift;
+
+    my $folder       = $args->{folder};
+    my $tfm_cache    = $args->{cache};
+    my $imap_msg_ids = $args->{msg_ids};
+
+    my $imap_msg_count = scalar(@$imap_msg_ids);
+
+    return unless $folder;
+    return unless $tfm_cache;
+
+    my $fetcher = {};
+
+    # Take the list of message id's and break them up into smaller chunks in the
+    # form of an array of MessageSet objects.
+    #
+   #my $threaded_sequences = threaded_sequence_chunker( $imap_msg_ids );
+
+    # Call the function that takes our message id list and loads up our
+    # sequences queue with M::I::MessageSet objects.
+    #
+   #threaded_sequence_chunker( $imap_msg_ids );
+
+    while ( 1 ) {
+
+        my $cur_block = cache_check({ cache => $tfm_cache, content_type => 'messages_to_be_fetched', folder => $folder, limit => $opts->{max_fetch} });
+
+        unless ( $cur_block && scalar(@$cur_block) > 0 ) {
+            verbose( "\n\n\n\n\nNo messages remaining to be fetched...\n\n\n\n" );
+            last;
+        }
+
+        # Make a M::I::MS object to get a clean range of message ids.
+        #
+        my $cur_msgset  = Mail::IMAPClient::MessageSet->new(@$cur_block);
+
+        {
+            lock($sequence_queue);
+            $sequence_queue->enqueue( $cur_msgset );
+        }
+
+    }
+
+
 
     # Trying to come up with a way of trapping a Ctrl-C to gracefully finish the
     # current iteration and finish producing the report.  It doesn't work very
@@ -2223,7 +2430,7 @@ sub threaded_fetch_msgs {
     #
     #$SIG{'INT'} = 'break_fetch';
 
-    my $threads = [];
+    my $threads    = [];
 
         # Each thread will stuff stats in the global progress_queue object.
         # Spawn this thread which will keep watching the queue and computing
@@ -2247,7 +2454,7 @@ sub threaded_fetch_msgs {
 
         {
 
-            my $cache_put_thread = 
+            my $cache_put_thread =
                 threads->create({ 'context' => 'void',
                                   'exit'    => 'thread_only' }, \&cache_put_thread, $folder, $total_sequences, $imap_msg_count );
 
@@ -2265,7 +2472,7 @@ sub threaded_fetch_msgs {
         # number of sequence objects...
         #
         while ( $sequences_completed < $total_sequences ) {
-        
+
             sleep 2;
 
             {
@@ -2294,10 +2501,10 @@ sub threaded_fetch_msgs {
             {
 
                 lock($sequence_queue);
-                lock($thread_pumpkins);
+               #lock($thread_pumpkins);
                 lock($sequences_finished_queue);
 
-                $threads_running     = $thread_pumpkins->pending();
+               #$threads_running     = $thread_pumpkins->pending();
                 $sequences_completed = $sequences_finished_queue->pending();
                 $sequences_in_queue  = $sequence_queue->pending();
 
@@ -2319,16 +2526,18 @@ sub threaded_fetch_msgs {
 
             {
 
+                for ( 1..$opts->{threads} ) {
 
                 # Enqueue this thread before we start it to make sure we
                 # don't have any race conditions.
                 #
-                {
-                    lock($thread_pumpkins);
-                    $thread_pumpkins->enqueue( $cur_bucket );
-                }
+              # {
+              #     lock($thread_pumpkins);
+              #     $thread_pumpkins->enqueue( $cur_bucket );
+              # }
 
-                $threads->[$cur_bucket] = threads->create(
+                
+                    my $thr = threads->create(
 
                     # Set thread behavior explicitly
                     #
@@ -2342,11 +2551,15 @@ sub threaded_fetch_msgs {
                         $folder,
                         $cur_bucket,
 
-                );
+                    );
 
-                print "Spawned thread: $cur_bucket\n" if $opts->{verbose};
+                    print "Spawned thread: $cur_bucket\n" if $opts->{verbose};
 
-                $threads->[$cur_bucket++]->detach();
+                    $thr->detach();
+
+                    $thread_ids->{$cur_bucket} = $thr->tid();
+
+            }
 
             }
 
@@ -2407,6 +2620,7 @@ sub threaded_fetch_msgs {
 #       #$SIG{'INT'} = 'die_signal';
 
 } # }}}
+=cut
 
 # {{{ imap_thread
 #
@@ -2420,19 +2634,13 @@ sub imap_thread {
     # Each thread gets an appropriate list of M::I::MessageSet objects
     #
     my $folder       = shift;
-    my $cur_bucket   = shift;
-    my $msg_set_object;
+    my $work_q       = shift;
 
     my $thr = threads->self();
     $thr->set_thread_exit_only(1);
 
-    {
-        lock($sequence_queue);
-        $msg_set_object = $sequence_queue->extract();
+    my $tid = $thr->tid();
 
-    }
-
-    ddump( 'msg_set_list for bucket ' . $cur_bucket . ': ', $msg_set_object );
 
     my @headers;
 
@@ -2442,7 +2650,274 @@ sub imap_thread {
     #
     push @headers, $header_table{$_} for qw/DATE SUBJECT SIZE TO FROM LISTID/;
 
-    my ( $imap_thread_socket, $imap_thread );
+    my %imap_options = %global_imap_options;
+
+    if ( $opts->{debug} ) {
+
+        open( CURDBG, '>>' . $opts->{log} . ".$tid" )
+            or die_clean( 1, "Unable to open debuglog $tid: $!\n" );
+
+        $imap_options{Debug}    = $opts->{debug} . '.' . $tid;
+        $imap_options{Debug_fh} = *CURDBG;
+
+    }
+
+    my $imap_thread_socket =
+        $opts->{Ssl}
+        ? create_ssl_socket( 'Socket for thread: ' . $tid )
+        : 0
+        ;
+
+    if ( $imap_thread_socket ) {
+        $imap_options{Socket} = $imap_thread_socket;
+    }
+
+    my $imap_error;
+
+    # Each thread gets its own imap object...
+    #
+    my $imap_thread = Mail::IMAPClient->new(%imap_options)
+        or $imap_error = "Cannot connect to host : $@";
+
+    if ( $imap_error ) {
+
+        {
+            lock($thread_errors_queue);
+            $thread_errors_queue->enqueue($imap_error);
+        }
+
+        sleep 15;
+
+        exit (1);
+
+    }
+
+    my $done = 0;
+
+    do {
+
+        # If we got this far, it's time to wait for some work...
+        #
+        {
+            lock($idle_thread_queue);
+            $idle_thread_queue->enqueue($tid);
+        }
+
+        sleep 2;
+
+        my $cur_msgset;
+
+        {
+            lock($work_q);
+            $cur_msgset = $work_q->extract();
+
+        }
+
+        if ( defined $cur_msgset ) {
+
+            if ( ! ref $cur_msgset && $cur_msgset < 0 ) {
+                $done = 1;
+                last;
+            }
+
+        } else {
+            next;
+        }
+
+
+        # We got some work.  The parent has taken us out of the idle queue at
+        # this point.
+
+
+
+        # Reselect the folder so this thread is in the right place.  No
+        # validation or exists check necessary at this stage.
+        #
+        if ( ! $imap_thread->examine($folder) ) {
+
+            my $error = "\n\n\nERROR: Problem selecting folder $folder in thread $tid: $@\n\n\n\n";
+
+            ddump( 'error', $error );
+
+            {
+                lock($thread_errors_queue);
+                $thread_errors_queue->enqueue($error);
+            }
+
+            # We failed to fetch this sequence, so stick it back in the queue
+            # and let another thread handle it.
+            {
+                lock($sequence_queue);
+                $sequence_queue->enqueue( $cur_msgset );
+
+            }
+
+            # Introducing some delay to allow some time to pass before another
+            # threads starts up to handle the messages that we put back into the
+            # queue.
+            #
+            sleep 15;
+
+            last;
+        }
+
+
+        while ( 1 ) {
+
+            # Make a M::I::MS object to get a clean range of message ids.
+            #
+        #my $cur_msgset  = Mail::IMAPClient::MessageSet->new(@$cur_block);
+
+        #{
+        #    lock($sequence_queue);
+        #    $sequence_queue->enqueue( $cur_msgset );
+        #}
+
+
+            my @cur_msg_id_list = $cur_msgset->unfold;
+
+            my $cur_msg_id_list_count = scalar(@cur_msg_id_list);
+
+            next unless $cur_msg_id_list_count;
+
+            my $cur_fetcher = $imap_thread->fetch_hash( \@cur_msg_id_list, @headers);
+
+            if ( ! ref $cur_fetcher eq 'HASH' ) {
+
+                my $error = "ERROR: fetching messages in folder $folder in thread $tid: $@\n";
+
+                ddump( 'error', $error );
+
+                # We failed to fetch this sequence, stick it back in the queue and
+                # let another thread handle it.
+                #
+                {
+                    lock($sequence_queue);
+                    $sequence_queue->enqueue( $cur_msgset );
+
+                }
+
+                {
+                    lock($thread_errors_queue);
+                    $thread_errors_queue->enqueue($error);
+                }
+
+                # Introducing some delay to allow some time to pass before another
+                # threads starts up to handle the messages that we put back into the
+                # queue.
+                #
+                sleep 15;
+
+            #   {
+            #       lock($thread_pumpkins);
+            #       my $foo = $thread_pumpkins->extract();
+            #   }
+
+                last;
+
+            }
+
+
+            {
+
+                lock( $fetched_queue );
+
+                ddump( 'cur_fetcher_before_stripping', $cur_fetcher );
+
+                for my $m_id ( keys %$cur_fetcher ) {
+
+                    next unless $m_id;
+
+                    # Iterate the list of fetched messages and fix each value returned.
+                    # The header information has some issues like CRLF and such.
+                    #
+                    for my $cur_header (@headers) {
+
+                        $cur_fetcher->{$m_id}->{$cur_header} =
+                            stripper( $header_table{$cur_header},
+                                    $cur_fetcher->{$m_id}->{$cur_header} );
+
+                    #$cur_fetcher->{$m_id}->{$cur_header} = '[EmptyValue]'
+                    #    unless $cur_fetcher->{$m_id}->{$cur_header};
+
+                    }
+
+                    $fetched_queue->enqueue( $m_id => $cur_fetcher->{$m_id} );
+
+                }
+
+            }
+
+
+            {
+                lock($sequences_finished_queue);
+                $sequences_finished_queue->enqueue( $cur_msgset );
+            }
+
+
+        }
+
+        sleep 3;
+
+    } until ( $done );
+
+
+    if ( $imap_thread && $imap_thread_socket ) {
+
+        my $rc = $imap_thread->_imap_command( 'LOGOUT', 'BYE' );
+
+        #ddump( 'response code from LOGOUT', $rc );
+
+        sleep 5;
+
+
+        # This thread is done, tear down the imap connection.
+        #
+        $imap_thread->disconnect;
+        $imap_thread_socket->close( %ssl_socket_close_options );
+
+        sleep 5;
+
+    }
+
+
+    exit(0);
+
+} # }}}
+
+=pod
+# {{{ old_imap_thread
+#
+# Expects to receive the folder name, current thread id, and the
+# Mail::IMAPClient::MessageSet object.
+#
+# Returns nothing, simply adds the results to the thread-safe queue.
+#
+sub old_imap_thread {
+
+    # Each thread gets an appropriate list of M::I::MessageSet objects
+    #
+    my $folder       = shift;
+    my $cur_bucket   = shift;
+
+    my $thr = threads->self();
+    $thr->set_thread_exit_only(1);
+
+    ddump( 'msg_set_list for bucket ' . $cur_bucket . ': ', $msg_set_object );
+
+    {
+        lock($thread_pumpkins);
+        $thread_pumpkins->enqueue( $thr->tid() );
+    }
+
+    my @headers;
+
+    # TODO
+    #
+    # Fix this header handling...
+    #
+    push @headers, $header_table{$_} for qw/DATE SUBJECT SIZE TO FROM LISTID/;
+
     my %imap_options = %global_imap_options;
 
     if ( $opts->{debug} ) {
@@ -2455,25 +2930,92 @@ sub imap_thread {
 
     }
 
-    {
+    my $imap_thread_socket =
+        $opts->{Ssl}
+        ? create_ssl_socket( 'Socket for thread: ' . $cur_bucket )
+        : 0
+        ;
 
-        my $imap_thread_socket =
-            $opts->{Ssl}
-            ? create_ssl_socket( 'Socket for thread: ' . $cur_bucket )
-            : 0
-            ;
+    if ( $imap_thread_socket ) {
+        $imap_options{Socket} = $imap_thread_socket;
+    }
 
-        if ( $imap_thread_socket ) {
-            $imap_options{Socket} = $imap_thread_socket;
+    my $imap_error;
+
+    # Each thread gets its own imap object...
+    #
+    my $imap_thread = Mail::IMAPClient->new(%imap_options)
+        or $imap_error = "Cannot connect to host : $@";
+
+    if ( $imap_error ) {
+
+        {
+            lock($thread_errors_queue);
+            $thread_errors_queue->enqueue($imap_error);
         }
 
-        # Each thread gets its own imap object...
-        #
-        my $imap_thread = Mail::IMAPClient->new(%imap_options)
-            or die "Cannot connect to host : $@";
+        sleep 15;
 
-        # Reselect the folder so this thread is in the right place.  No validation
-        # or exists check necessary at this stage.
+        {
+            lock($thread_pumpkins);
+            my $foo = $thread_pumpkins->extract();
+        }
+
+        exit (1);
+
+    }
+
+    while (1) {
+
+        my $error;
+
+        my $msg_set_object;
+
+        my $pending_sq = 0;
+
+        {
+            lock($sequence_queue);
+            $pending_sq = $sequence_queue->pending();
+
+            if ( $pending_sq ) {
+                $msg_set_object = $sequence_queue->extract();
+            }
+
+        }
+
+        if ( ! $pending_sq ) {
+
+            sleep 10;
+
+            my $sequences_in_queue;
+
+            {
+
+                lock($sequence_queue);
+                lock($thread_pumpkins);
+                lock($sequences_finished_queue);
+
+                $threads_running     = $thread_pumpkins->pending();
+                $sequences_completed = $sequences_finished_queue->pending();
+                $sequences_in_queue  = $sequence_queue->pending();
+
+            }
+
+            if ( $threads_running >= $opts->{threads} ) {
+                next;
+            }
+
+            # Don't spawn any new threads if there's no sequences in queue.
+            #
+            if ( ! $sequences_in_queue >= 1 ) {
+                next;
+            }
+
+        }
+
+
+        # Reselect the folder so this thread is in the right place.  No
+        # validation or exists check necessary at this stage.
         #
         if ( ! $imap_thread->examine($folder) ) {
 
@@ -2511,6 +3053,10 @@ sub imap_thread {
         }
 
         my @cur_msg_id_list = $msg_set_object->unfold;
+
+        my $cur_msg_id_list_count = scalar(@cur_msg_id_list);
+
+        next unless $cur_msg_id_list;
 
         ddump( 'cur_msg_id_list for bucket ' . $cur_bucket . ' : ', \@cur_msg_id_list );
 
@@ -2615,6 +3161,7 @@ sub imap_thread {
     exit(0);
 
 } # }}}
+=cut
 
 # {{{ create_ssl_socket
 #
@@ -2800,7 +3347,7 @@ sub cache_check {
         # folders, we'll create a list of folders from the actual messages
         # stored in the cache.
         #
-        my $sql = 
+        my $sql =
             $opts->{cache_only}
             ? q[
                     SELECT DISTINCT
@@ -2894,7 +3441,7 @@ sub cache_check {
 
         my $count = $sth->fetch;
 
-        return 
+        return
             $count->[0]
             ? $count->[0]
             : 0
@@ -3828,7 +4375,6 @@ sub cache_put_thread {
     my $done                = 0;
 
 
-
     # I suspected Term::Menus might be mucking with output buffering...
     #
     $|=1;
@@ -3851,23 +4397,16 @@ sub cache_put_thread {
     # messages queue and merge them into the big fetcher hashref.
     #
     while ( ! $done ) {
-        
+
         sleep 3;
 
         my $cur_time = time;
 
         my $elapsed_time = convert_seconds( $cur_time - $start_time );
 
-        {
-            lock($thread_pumpkins);
-            $threads_active = $thread_pumpkins->pending();
-
-        }
-
         $tbar->text(
             "Elapsed time: $elapsed_time / $threads_active threads running"
         );
-
 
         my %extracted_messages;
 
@@ -3929,9 +4468,6 @@ sub cache_put_thread {
            #lock($cached_msg_count_queue);
            #$cached_msg_count_queue->enqueue($cur_msg_count);
 
-            lock($thread_pumpkins);
-            $threads_active = $thread_pumpkins->pending();
-
             lock($sequences_finished_queue);
             $sequences_completed = $sequences_finished_queue->pending();
 
@@ -3939,7 +4475,8 @@ sub cache_put_thread {
             # If all of our expected sequences are complete and there are no
             # more threads active, we can go away...
             #
-            if ( $sequences_completed == $total_sequences && ! $threads_active >= 1 ) {
+           #if ( $sequences_completed == $total_sequences && ! $threads_active >= 1 ) 
+            if ( $sequences_completed == $total_sequences ) {
                 $done = 1;
             }
 
@@ -4978,7 +5515,7 @@ Use multiple threads to fetch messages simultaneously.  Speeds things up dramati
 
 Specify the number of threads.  Higher is faster, but too high will engage the temporary bandwidth usage ban from Google.
 
-(default: 0) 
+(default: 0)
 
 =item B<--cache> I<cache_filename>
 
@@ -5086,9 +5623,9 @@ C<./imap-report.pl>
 
 =head1 ACKNOWLEDGEMENTS
 
-Built largely using Mail::IMAPClient currently maintained by E<lt>L<PLOBBES|http://search.cpan.org/~plobbes/>E<gt>, 
-the Mail::Address module by E<LT>L<MARKOV|http://search.cpan.org/~markov/>E<gt> (also a former maintainer 
-of Mail::IMAPClient), the Term::Menus module by E<lt>L<REEDFISH|http://search.cpan.org/~reedfish/>E<gt>, along 
+Built largely using Mail::IMAPClient currently maintained by E<lt>L<PLOBBES|http://search.cpan.org/~plobbes/>E<gt>,
+the Mail::Address module by E<LT>L<MARKOV|http://search.cpan.org/~markov/>E<gt> (also a former maintainer
+of Mail::IMAPClient), the Term::Menus module by E<lt>L<REEDFISH|http://search.cpan.org/~reedfish/>E<gt>, along
 with String::ProgressBar from E<lt>L<AHERNIT|http://search.cpan.org/~ahernit/>E<gt>.
 
 =head1 TODO
