@@ -2614,6 +2614,10 @@ sub threaded_fetch_msgs {
 
     my $offset = 0;
 
+    # Iterate through the message ids creating blocks of --max_fetch in size.
+    # Turn each block of message ids into a M::I::MessageSet object and stuff it
+    # into the queue of sequences.
+    #
     while ( $offset <= $imap_msg_count ) {
 
         my $cur_block = cache_check(
@@ -2666,9 +2670,9 @@ sub threaded_fetch_msgs {
                                 'exit'    => 'thread_only'
                              },
                              \&cache_put_thread,
-                             $folder,
-                             $total_sequences,
-                             $imap_msg_count
+                                $folder,
+                                $total_sequences,
+                                $imap_msg_count
                            );
 
         print "Spawned caching thread.\n\n\n";
@@ -3239,12 +3243,14 @@ sub cache_init {
             CREATE TABLE folders (
                 id              INTEGER NOT NULL PRIMARY KEY,
                 server          TEXT NOT NULL,
+                username        TEXT NOT NULL,
                 folder          TEXT NOT NULL,
                 msg_count       INTEGER,
                 validated       BOOLEAN,
                 last_update     INTEGER,
                     UNIQUE (
                         server,
+                        username,
                         folder
                     )
             );
@@ -3259,6 +3265,7 @@ sub cache_init {
             CREATE TABLE messages (
                 id              INTEGER NOT NULL PRIMARY KEY,
                 server          TEXT NOT NULL,
+                username        TEXT NOT NULL,
                 folder          TEXT NOT NULL,
                 msg_id          INTEGER NOT NULL,
                 "TO"            TEXT,
@@ -3271,6 +3278,7 @@ sub cache_init {
                 last_update     INTEGER,
                     UNIQUE (
                         server,
+                        username,
                         folder,
                         msg_id
                     )
@@ -3287,11 +3295,13 @@ sub cache_init {
             CREATE TABLE fetchlist (
                 id              INTEGER NOT NULL PRIMARY KEY,
                 server          TEXT NOT NULL,
+                username        TEXT NOT NULL,
                 folder          TEXT NOT NULL,
                 msg_id          INTEGER UNIQUE NOT NULL,
                 last_update     INTEGER,
                     UNIQUE (
                         server,
+                        username,
                         folder,
                         msg_id
                     )
@@ -3356,6 +3366,7 @@ sub cache_check {
                         messages
                     WHERE
                         server = ?
+                        AND username = ?
               ]
 
             : q[
@@ -3366,6 +3377,7 @@ sub cache_check {
                         folders
                     WHERE
                         server = ?
+                        AND username = ?
                         AND validated = 1
 
                ]
@@ -3375,7 +3387,7 @@ sub cache_check {
 
         push @$folderlist, $_->{folder}
             for @{ $dbh->selectall_arrayref( $sql, { Slice => {} },
-                                             $opts->{server} ) };
+                                             $opts->{server}, $opts->{user} ) };
 
         if ( scalar(@$folderlist) ) {
             return $folderlist;
@@ -3403,6 +3415,7 @@ sub cache_check {
                 folders
             WHERE
                 server = ?
+                AND username = ?
                 AND validated = 1
 
         ];
@@ -3411,7 +3424,7 @@ sub cache_check {
 
         push @$results, $_->{folder}
             for @{ $dbh->selectall_arrayref( $sql, { Slice => {} },
-                                             $opts->{server} ) };
+                                             $opts->{server}, $opts->{user} ) };
         return $results->[0];
 
                 # }}}
@@ -3432,12 +3445,13 @@ sub cache_check {
                 messages
             WHERE
                 server = ?
+                AND username = ?
                 AND folder = ?
         ];
 
         my $sth = $dbh->prepare( $sql );
 
-        $sth->execute( $opts->{server}, $value );
+        $sth->execute( $opts->{server}, $opts->{user}, $value );
 
         my $count = $sth->fetch;
 
@@ -3506,6 +3520,7 @@ sub cache_check {
                 fetchlist
             WHERE
                 server = ?
+                AND username = ?
                 AND folder = ?
                 AND last_update IS NULL
             ORDER BY
@@ -3530,7 +3545,7 @@ sub cache_check {
         my $folderlist = [];
 
         push @$folderlist, $_->{msg_id}
-            for @{ $dbh->selectall_arrayref( $sql, { Slice => {} }, $opts->{server}, $folder, $limit, $offset ) };
+            for @{ $dbh->selectall_arrayref( $sql, { Slice => {} }, $opts->{server}, $opts->{user}, $folder, $limit, $offset ) };
 
         if ( $dbh->errstr ) {
             show_error( 'Messages fetched from fetchlist cache error: ' . $dbh->errstr );
@@ -3567,6 +3582,7 @@ sub cache_check {
                 fetchlist
             WHERE
                 server = ?
+                AND username = ?
                 AND folder = ?
                 AND last_update NOT NULL
         ];
@@ -3587,7 +3603,7 @@ sub cache_check {
         my $folderlist = [];
 
         push @$folderlist, $_
-            for @{ $dbh->selectall_arrayref( $sql, {}, $opts->{server}, $folder ) };
+            for @{ $dbh->selectall_arrayref( $sql, {}, $opts->{server}, $opts->{user}, $folder ) };
 
         if ( $dbh->errstr ) {
             show_error( 'Messages fetched from fetchlist cache error: ' . $dbh->errstr );
@@ -3640,9 +3656,11 @@ sub cache_put {
 
             INSERT INTO folders (
                 server,
+                username,
                 folder,
                 last_update
             ) VALUES (
+                ?,
                 ?,
                 ?,
                 ?
@@ -3656,9 +3674,9 @@ sub cache_put {
 
             my $sth = $dbh->prepare($sql);
 
-            $sth->execute( $opts->{server}, $cur_folder, $cur_time );
+            $sth->execute( $opts->{server}, $opts->{user}, $cur_folder, $cur_time );
 
-            print "Inserted into DB: " . $opts->{server} . ' ' . $cur_folder . ' ' . $cur_time . "\n" if $opts->{verbose};
+            verbose( "Inserted into DB: " . $opts->{server} . ' ' . $opts->{user} . ' ' . $cur_folder . ' ' . $cur_time . "\n" );
 
         }
 
@@ -3678,10 +3696,12 @@ sub cache_put {
         my $sql = q[
             INSERT OR REPLACE INTO folders (
                 server,
+                username,
                 folder,
                 validated,
                 last_update
             ) VALUES (
+                ?,
                 ?,
                 ?,
                 ?,
@@ -3693,7 +3713,7 @@ sub cache_put {
 
         my $err;
 
-        $sth->execute( $opts->{server}, $folder, 1, time )
+        $sth->execute( $opts->{server}, $opts->{user}, $folder, 1, time )
             or $err = 1;
 
         if ( $err ) {
@@ -3723,6 +3743,7 @@ sub cache_put {
         my $sql = q[
             INSERT OR REPLACE INTO messages (
                 server,
+                username,
                 msg_id,
                 folder,
                 "TO",
@@ -3734,6 +3755,7 @@ sub cache_put {
                 FULLHEADERS,
                 last_update
             ) VALUES (
+                ?,
                 ?,
                 ?,
                 ?,
@@ -3768,6 +3790,7 @@ sub cache_put {
         for ( keys %$values ) {
             my $result = $sth->execute(
                 $opts->{server},
+                $opts->{user},
                 $_,
                 $folder,
                 $values->{$_}->{ $header_table{TO} },
@@ -3813,9 +3836,11 @@ sub cache_put {
         my $sql = q[
             INSERT OR REPLACE INTO fetchlist (
                 server,
+                username,
                 folder,
                 msg_id
             ) VALUES (
+                ?,
                 ?,
                 ?,
                 ?
@@ -3841,6 +3866,7 @@ sub cache_put {
 
             my $result = $sth->execute(
                 $opts->{server},
+                $opts->{user},
                 $folder,
                 $_
             );
@@ -3878,10 +3904,12 @@ sub cache_put {
         my $sql = q[
             INSERT OR REPLACE INTO fetchlist (
                 server,
+                username,
                 folder,
                 msg_id,
                 last_update
             ) VALUES (
+                ?,
                 ?,
                 ?,
                 ?,
@@ -3908,6 +3936,7 @@ sub cache_put {
 
             my $result = $sth->execute(
                 $opts->{server},
+                $opts->{user},
                 $folder,
                 $_,
                 $cur_time
@@ -3966,12 +3995,13 @@ sub cache_prune {
                 folders
             WHERE
                 server = ?
+                AND username = ?
                 AND last_update < ?
         ];
 
         my $sth = $dbh->prepare( $sql );
 
-        my $result = $sth->execute( $opts->{server}, $max_age );
+        my $result = $sth->execute( $opts->{server}, $opts->{user}, $max_age );
 
     } elsif ( $content_type eq 'fetched_messages' ) {
 
@@ -3980,12 +4010,13 @@ sub cache_prune {
                 messages
             WHERE
                 server = ?
+                AND username = ?
                 AND last_update < ?
         ];
 
         my $sth = $dbh->prepare( $sql );
 
-        my $result = $sth->execute( $opts->{server}, $max_age );
+        my $result = $sth->execute( $opts->{server}, $opts->{user}, $max_age );
 
     } elsif ( $content_type eq 'messages_to_be_fetched' ) {
 
@@ -3994,12 +4025,13 @@ sub cache_prune {
                 fetchlist
             WHERE
                 server = ?
+                AND username = ?
                 AND last_update < ?
         ];
 
         my $sth = $dbh->prepare( $sql );
 
-        my $result = $sth->execute( $opts->{server}, $max_age );
+        my $result = $sth->execute( $opts->{server}, $opts->{user}, $max_age );
 
     }
 
@@ -4047,6 +4079,7 @@ sub cache_report {
                 messages
             WHERE
                 server = ?
+                AND username = ?
                 AND folder = ?
             ORDER BY SIZE DESC
             LIMIT ?
@@ -4059,6 +4092,7 @@ sub cache_report {
                                       $sql,
                                       {},
                                       $opts->{server},
+                                      $opts->{user},
                                       $folder,
                                       $opts->{top} )};
 
@@ -4137,6 +4171,7 @@ sub cache_report {
                 messages
             WHERE
                 server = ?
+                AND username = ?
                 AND folder = ?
             GROUP BY $header
                 HAVING count_column >= 1
@@ -4155,6 +4190,7 @@ sub cache_report {
                                       $sql,
                                       {},
                                       $opts->{server},
+                                      $opts->{user},
                                       $folder,
                                       $opts->{top}
                                     )
@@ -4226,6 +4262,7 @@ sub cache_report {
                 messages
             WHERE
                 server = ?
+                AND username = ?
             GROUP BY $header
                 HAVING count_column >= 1
             ORDER BY count_column DESC
@@ -4243,6 +4280,7 @@ sub cache_report {
                                       $sql,
                                       {},
                                       $opts->{server},
+                                      $opts->{user},
                                       $opts->{top}
                                     )
             };
@@ -4283,6 +4321,7 @@ sub cache_report {
                 messages
             WHERE
                 server = ?
+                AND username = ?
                 AND folder = ?
         ];
 
@@ -4291,6 +4330,7 @@ sub cache_report {
                                       $sql,
                                       {},
                                       $opts->{server},
+                                      $opts->{user},
                                       $folder
                                     )
             };
@@ -4323,6 +4363,7 @@ sub cache_report {
                 messages
             WHERE
                 server = ?
+                AND username = ?
             ORDER BY
                 SIZE DESC
             LIMIT ?
@@ -4333,6 +4374,7 @@ sub cache_report {
                                       $sql,
                                       {},
                                       $opts->{server},
+                                      $opts->{user},
                                       $opts->{top}
                                     )
             };
@@ -4371,6 +4413,7 @@ sub cache_report {
                 messages
             WHERE
                 server = ?
+                AND username = ?
                 AND folder = ?
             GROUP BY LISTID
                 HAVING count_column >= 1
@@ -4383,6 +4426,7 @@ sub cache_report {
                                       $sql,
                                       {},
                                       $opts->{server},
+                                      $opts->{user},
                                       $folder
                                     )
             };
@@ -4415,6 +4459,7 @@ sub cache_report {
                 folders
             WHERE
                 server = ?
+                AND username = ?
 
         ];
 
@@ -4422,7 +4467,7 @@ sub cache_report {
 
         push @$folderlist, $_->{folder}
             for @{ $dbh->selectall_arrayref( $sql, { Slice => {} },
-                                             $opts->{server} ) };
+                                             $opts->{server}, $opts->{user} ) };
 
         if ( scalar(@$folderlist) ) {
             return $folderlist;
@@ -4448,6 +4493,7 @@ sub cache_report {
                 folders
             WHERE
                 server = ?
+                AND username = ?
                 AND validated = 1
 
         ];
@@ -4456,7 +4502,7 @@ sub cache_report {
 
         push @$results, $_->{folder}
             for @{ $dbh->selectall_arrayref( $sql, { Slice => {} },
-                                             $opts->{server} ) };
+                                             $opts->{server}, $opts->{user} ) };
 
         return $results->[0];
 
@@ -4535,7 +4581,6 @@ sub cache_put_thread {
     my $threads_active      = 0;
     my $sequences_completed = 0;
     my $cached_msg_count    = 0;
-    my $done                = 0;
 
 
     # I suspected Term::Menus might be mucking with output buffering...
@@ -4556,8 +4601,9 @@ sub cache_put_thread {
 
     my $start_time = time;
 
-    # Now we that the threads have completed, iterate the values in our fetched
-    # messages queue and merge them into the big fetcher hashref.
+    my $done = 0;
+
+    # Keep iterating while there are sequences in queue.
     #
     while ( ! $done ) {
 
