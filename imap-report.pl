@@ -577,7 +577,7 @@ GetOptions(
         'Ssl!',
         'Uid!',
         'cache_file=s',
-        'cache_age=i',
+        'cache_age=s',
         'cache_only!',
         'cache_prune!',
         'max_fetch=i',
@@ -594,11 +594,13 @@ GetOptions(
 
 read_config_file();
 
-my $cache_age =
-    $opts->{cache_age}
-    ? $opts->{cache_age} * 24 * 60 * 60
-    : 24 * 60 * 60
-    ;
+#my $cache_age =
+#    $opts->{cache_age}
+#    ? $opts->{cache_age} * ( 24 * 60 * 60 )
+#    : 24 * 60 * 60
+#    ;
+
+my $cache_age = convert_cache_age( $opts->{cache_age} );
 
 if ( $opts->{threshold} =~ m/^(\d+)%/ ) {
     $opts->{threshold_percentage} = $1 * 0.10;
@@ -2231,7 +2233,9 @@ sub fetch_messages {
     return unless $folder;
     return unless $f_cache;
 
-    my $cached_count = cache_check({ cache => $f_cache, content_type => 'fetched_messages', value => $folder });
+    my $cached_count = cache_check({ cache        => $f_cache,
+                                     value        => $folder,
+                                     content_type => 'fetched_messages', });
 
     return $cached_count if $opts->{cache_only};
 
@@ -3317,6 +3321,8 @@ sub cache_init {
 
     $dbh->{AutoCommit} = 1;
 
+    cache_prune({ cache => $dbh });
+
     return $dbh;
 
 } # }}}
@@ -3349,9 +3355,6 @@ sub cache_check {
 
         # Checks the cached list of folders and returns an arrayref list of
         # them.
-
-        cache_prune({ cache        => $dbh,
-                      content_type => $content_type });
 
         # If we're in cache_only mode, instead of grabbing the stored list of
         # folders, we'll create a list of folders from the actual messages
@@ -3435,9 +3438,6 @@ sub cache_check {
 
         return unless defined $value && $value;
 
-        cache_prune({ cache        => $dbh,
-                      content_type => $content_type });
-
         my $sql = q[
             SELECT
                 count(msg_id)
@@ -3511,8 +3511,6 @@ sub cache_check {
         return unless $limit;
         return unless defined $offset;
 
-        #$dbh->begin_work;
-
         my $sql = q[
             SELECT
                 msg_id
@@ -3560,8 +3558,6 @@ sub cache_check {
             return;
         }
 
-        #$dbh->commit;
-
         # }}}
 
     } elsif ( $content_type eq 'messages_previously_fetched' ) {
@@ -3572,8 +3568,6 @@ sub cache_check {
 
         return unless $folder;
 
-
-        #$dbh->begin_work;
 
         my $sql = q[
             SELECT
@@ -3615,8 +3609,6 @@ sub cache_check {
         } else {
             return;
         }
-
-        #$dbh->commit;
 
         # }}}
 
@@ -3979,63 +3971,62 @@ sub cache_prune {
 
     my $args = shift;
 
-    my $content_type = $args->{content_type};
-    my $dbh          = $args->{cache};
+    my $dbh = $args->{cache};
 
-    return unless $content_type;
     return unless $dbh;
 
     my $cur_time = time;
     my $max_age  = $cur_time - $cache_age;
 
-    if ( $content_type eq 'folder_list' ) {
+    print "Pruning cached items older than: "
+        . convert_seconds($cache_age) 
+        . "\n\n";
 
-        my $sql = q[
-            DELETE FROM
-                folders
-            WHERE
-                server = ?
-                AND username = ?
-                AND last_update < ?
-        ];
+    # folderlist
+    #
+    my $sql = q[
+        DELETE FROM
+            folders
+        WHERE
+            server = ?
+            AND username = ?
+            AND last_update < ?
+    ];
 
-        my $sth = $dbh->prepare( $sql );
+    my $sth = $dbh->prepare( $sql );
 
-        my $result = $sth->execute( $opts->{server}, $opts->{user}, $max_age );
+    my $result = $sth->execute( $opts->{server}, $opts->{user}, $max_age );
 
-    } elsif ( $content_type eq 'fetched_messages' ) {
 
-        my $sql = q[
-            DELETE FROM
-                messages
-            WHERE
-                server = ?
-                AND username = ?
-                AND last_update < ?
-        ];
+    # fetched_messages
+    #
+    $sql = q[
+        DELETE FROM
+            messages
+        WHERE
+            server = ?
+            AND username = ?
+            AND last_update < ?
+    ];
 
-        my $sth = $dbh->prepare( $sql );
+    $sth = $dbh->prepare( $sql );
 
-        my $result = $sth->execute( $opts->{server}, $opts->{user}, $max_age );
+    $result = $sth->execute( $opts->{server}, $opts->{user}, $max_age );
 
-    } elsif ( $content_type eq 'messages_to_be_fetched' ) {
+    # fetchlist
+    #
+    $sql = q[
+        DELETE FROM
+            fetchlist
+        WHERE
+            server = ?
+            AND username = ?
+            AND last_update < ?
+    ];
 
-        my $sql = q[
-            DELETE FROM
-                fetchlist
-            WHERE
-                server = ?
-                AND username = ?
-                AND last_update < ?
-        ];
+    $sth = $dbh->prepare( $sql );
 
-        my $sth = $dbh->prepare( $sql );
-
-        my $result = $sth->execute( $opts->{server}, $opts->{user}, $max_age );
-
-    }
-
-    $opts->{cache_prune} = 0;
+    $result = $sth->execute( $opts->{server}, $opts->{user}, $max_age );
 
     return;
 
@@ -5150,6 +5141,24 @@ sub convert_seconds {
     my $secs_string  = $secs  ? sprintf( '%02d', $secs  ) . ' seconds ' : '';
 
     return join( '', $days_string, $hours_string, $mins_string, $secs_string );
+
+} # }}}
+
+# {{{  convert_cache_age
+#
+sub convert_cache_age {
+    
+    my $input = shift;
+
+    if ( $input =~ m/^(\d+)d?$/i ) {
+        return $1 * ( 24 * 60 * 60 );
+    } elsif ( $input =~ m/^(\d+)h/i ) {
+        return $1 * ( 24 * 60 );
+    } elsif ( $input =~ m/^(\d+)m/i ) {
+        return $1 * 60;
+    } elsif ( $input =~ m/^(\d+)s/i ) {
+        return $1;
+    }
 
 } # }}}
 
