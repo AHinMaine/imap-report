@@ -244,6 +244,33 @@ has ssl_socket_close_options => (
     auto_deref => 1,
 );
 
+sub report_types {
+
+
+    use MooseX::Collect;
+
+    collect 'description';
+    collect 'report';
+    collect 'name';
+
+    with qw(
+
+        IMAP::Report::Type::all_folders_message_count_report
+        IMAP::Report::Type::all_folders_message_sizes_report
+        IMAP::Report::Type::all_folders_biggest_message_report
+        IMAP::Report::Type::all_folders_list_ids_report
+        IMAP::Report::Type::all_folders_messages_by_subject_report
+        IMAP::Report::Type::messages_by_subject_report
+        IMAP::Report::Type::messages_by_list_id_report
+        IMAP::Report::Type::messages_by_from_address_report
+        IMAP::Report::Type::messages_by_to_address_report
+        IMAP::Report::Type::biggest_messages_report
+        IMAP::Report::Type::size_report
+        IMAP::Report::Type::list
+
+    );
+
+}
 
 # {{{ cache_init
 #
@@ -587,8 +614,8 @@ sub print_report {
 
     my $report = shift;
 
-    my $file           = "$ENV{HOME}/imap-report.txt";
-    my $running_report = "$ENV{HOME}/imap-running-report.txt";
+    my $file           = "$ENV{HOME}/imap-report-moose.txt";
+    my $running_report = "$ENV{HOME}/imap-running-report-moose.txt";
 
     open ( RPT, ">" . $file )
         or die_clean( 1, "Unable to write report.\n" );
@@ -2043,13 +2070,31 @@ package IMAP::Report::Type;
 
 use Moose::Role;
 
-requires 'description';
 
-requires 'report';
 
-# {{{ show_report_types
+sub foo {
+
+    my $self = shift;
+    main::ddump( 'self_in_foo', $self );
+
+    my $key = $self->name;
+
+    main::ddump( 'key_in_foo', $key );
+    my $val = $self->description;
+
+    main::ddump( 'val_in_foo', $val );
+
+    my %hash = ( $key => $val );
+
+    main::ddump( 'hash_in_foo', \%hash );
+
+    return %hash;
+
+}
+
+# {{{ old_show_report_types
 #
-sub show_report_types {
+sub old_show_report_types {
 
 my $types = report_types();
 
@@ -2075,11 +2120,12 @@ die_clean( 0, 'Quitting...' );
 #
 package IMAP::Report::Type::all_folders_message_count_report;
 
-use Moose;
+use Moose::Role;
 
 with 'IMAP::Report::Type';
 
-sub description { 'Total count of messages in ALL folders' }
+sub name        {'all_folders_message_count_report'}
+sub description {'Total count of messages in ALL folders'}
 
 # {{{ report
 #
@@ -2090,6 +2136,7 @@ sub report {
 
     my $self                     = shift;
     my $args                     = shift;
+
     my $opts                     = $self->opts;
     my %imap_options             = $self->imap_options;
     my %ssl_socket_close_options = $self->ssl_socket_close_options;
@@ -2230,11 +2277,12 @@ sub report {
 #
 package IMAP::Report::Type::all_folders_message_sizes_report;
 
-use Moose;
+use Moose::Role;
 
 with 'IMAP::Report::Type';
 
-sub description { 'Total size of messages in ALL folders' }
+sub name        {'all_folders_message_sizes_report'}
+sub description {'Total size of messages in ALL folders'}
 
 # {{{ report
 #
@@ -2340,11 +2388,12 @@ sub report {
 #
 package IMAP::Report::Type::all_folders_biggest_message_report;
 
-use Moose;
+use Moose::Role;
 
 with 'IMAP::Report::Type';
 
-sub description { 'Total list of biggest messages in ALL folders' }
+sub name        {'all_folders_biggest_message_report'}
+sub description {'Total list of biggest messages in ALL folders'}
 
 # {{{ report
 #
@@ -2398,11 +2447,12 @@ sub report {
 #
 package IMAP::Report::Type::all_folders_list_ids_report;
 
-use Moose;
+use Moose::Role;
 
 with 'IMAP::Report::Type';
 
-sub description { 'Total summary of the message List-ID headers in ALL folders' }
+sub name        {'all_folders_list_ids_report'}
+sub description {'Total summary of the message List-ID headers in ALL folders'}
 
 # {{{ report
 #
@@ -2477,11 +2527,12 @@ sub report {
 #
 package IMAP::Report::Type::all_folders_messages_by_subject_report;
 
-use Moose;
+use Moose::Role;
 
 with 'IMAP::Report::Type';
 
-sub description { 'Total summary of the message Subject headers in ALL folders' }
+sub name        {'all_folders_messages_by_subject_report'}
+sub description {'Total summary of the message Subject headers in ALL folders'}
 
 # {{{ report
 #
@@ -2499,11 +2550,12 @@ sub report {
 #
 package IMAP::Report::Type::messages_by_subject_report;
 
-use Moose;
+use Moose::Role;
 
 with 'IMAP::Report::Type';
 
-sub description { 'Folder statistics report for message SUBJECT' }
+sub name        {'messages_by_subject_report'}
+sub description {'Folder statistics report for message SUBJECT'}
 
 # {{{ report
 #
@@ -2521,11 +2573,12 @@ sub report {
 #
 package IMAP::Report::Type::messages_by_list_id_report;
 
-use Moose;
+use Moose::Role;
 
 with 'IMAP::Report::Type';
 
-sub description { 'Folder statistics report for message LISTID' }
+sub name        {'messages_by_list_id_report'}
+sub description {'Folder statistics report for message LISTID'}
 
 # {{{ report
 #
@@ -2577,11 +2630,12 @@ sub report {
 #
 package IMAP::Report::Type::messages_by_from_address_report;
 
-use Moose;
+use Moose::Role;
 
 with 'IMAP::Report::Type';
 
-sub description { 'Folder statistics report for message FROM addresses' }
+sub name        {'messages_by_from_address_report'}
+sub description {'Folder statistics report for message FROM addresses'}
 
 # {{{ report
 #
@@ -2599,11 +2653,12 @@ sub report {
 #
 package IMAP::Report::Type::messages_by_to_address_report;
 
-use Moose;
+use Moose::Role;
 
 with 'IMAP::Report::Type';
 
-sub description { 'Folder statistics report for message TO addresses' }
+sub name        {'messages_by_to_address_report'}
+sub description {'Folder statistics report for message TO addresses'}
 
 # {{{ report
 #
@@ -2621,11 +2676,12 @@ sub report {
 #
 package IMAP::Report::Type::biggest_messages_report;
 
-use Moose;
+use Moose::Role;
 
 with 'IMAP::Report::Type';
 
-sub description { 'Folder statistics report for message SIZE' }
+sub name        {'biggest_messages_report'}
+sub description {'Folder statistics report for message SIZE'}
 
 # {{{ report
 #
@@ -2748,11 +2804,12 @@ sub report {
 #
 package IMAP::Report::Type::size_report;
 
-use Moose;
+use Moose::Role;
 
 with 'IMAP::Report::Type';
 
-sub description { 'Folder summary report for total size of messages' }
+sub name        {'size_report'}
+sub description {'Folder summary report for total size of messages'}
 
 # {{{ report
 #
@@ -2821,11 +2878,12 @@ sub report {
 #
 package IMAP::Report::Type::list;
 
-use Moose;
+use Moose::Role;
 
 with 'IMAP::Report::Type';
 
-sub description { 'Display the current list of folders' }
+sub name        {'list'}
+sub description {'Display the current list of folders'}
 
 # {{{ report
 #
@@ -2852,6 +2910,43 @@ sub report {
 } # }}}
 
 1;
+
+# }}}
+
+# {{{ package IMAP::Report::Type::types
+#
+=pod
+package IMAP::Report::Type::types;
+
+use Moose;
+use MooseX::Collect;
+
+extends 'IMAP::Report';
+
+collect 'description';
+collect 'report';
+collect 'name';
+
+with qw(
+
+    IMAP::Report::Type::all_folders_message_count_report
+    IMAP::Report::Type::all_folders_message_sizes_report
+    IMAP::Report::Type::all_folders_biggest_message_report
+    IMAP::Report::Type::all_folders_list_ids_report
+    IMAP::Report::Type::all_folders_messages_by_subject_report
+    IMAP::Report::Type::messages_by_subject_report
+    IMAP::Report::Type::messages_by_list_id_report
+    IMAP::Report::Type::messages_by_from_address_report
+    IMAP::Report::Type::messages_by_to_address_report
+    IMAP::Report::Type::biggest_messages_report
+    IMAP::Report::Type::size_report
+    IMAP::Report::Type::list
+
+);
+
+1;
+
+=cut
 
 # }}}
 
@@ -4603,7 +4698,7 @@ $opts->{use_threaded_mode} = 0;
 $opts->{min_for_threads}   = 200;     # Minimum number of messages before threaded mode allowed
 $opts->{threshold}         = 20;      # Message count threshold before flushing message cache
 $opts->{conf}              = "$ENV{HOME}/.imapreportrc";
-$opts->{cache_file}        = "$ENV{HOME}/.imap-report.cache";
+$opts->{cache_file}        = "$ENV{HOME}/.imap-report-moose.cache";
 $opts->{cache_age}         = 7;
 $opts->{cache_only}        = 0;
 $opts->{cache_prune}       = 1;
@@ -4902,6 +4997,24 @@ my $cache = $ir->cache_init;
 ddump( 'ir', $ir );
 ddump( 'cache', $cache );
 
+my @types = $ir->report_types;
+
+
+ddump( 'types', \@types );
+
+#my $foo = IMAP::Report::Type::all_folders_message_count_report->new();
+
+#my $foo = IMAP::Report::Type::types->new();
+
+#ddump( 'foo', $foo );
+
+#my @test = $foo->description;
+
+#
+#
+#ddump('nhash', \%nhash );
+
+exit;
 
 # {{{ The main loop...
 #
